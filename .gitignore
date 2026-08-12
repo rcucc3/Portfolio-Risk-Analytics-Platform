@@ -1,0 +1,11 @@
+# Cached market data and exported results are reproducible artifacts
+data/*
+outputs/*
+!data/.gitkeep
+!outputs/.gitkeep
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
