@@ -1,12 +1,13 @@
-"""Terminal demonstration of the portfolio analytics and risk engine.
+"""Terminal demonstration of the portfolio analytics, risk and stress engines.
 
 Loads the default multi-asset portfolio from ``config.py``, downloads adjusted
-market data, and prints performance, asset-level, correlation, tail-risk and
-risk-decomposition diagnostics. A Streamlit front end will consume the same
-functions in a later phase.
+market data, and prints performance, asset-level, correlation, tail-risk,
+risk-decomposition and stress-testing diagnostics. A Streamlit front end will
+consume the same functions in a later phase.
 
 Usage:
     python app.py [--start 2015-01-01] [--end 2025-12-31] [--refresh] [--no-save]
+                  [--portfolio-value 1000000]
 """
 
 from __future__ import annotations
@@ -20,9 +21,17 @@ import pandas as pd
 import config
 from src import portfolio as pf
 from src import risk
+from src import stress
 from src.data_loader import MarketData, MarketDataError, load_market_data
 
 LINE_WIDTH = 78
+
+#: Reverse-stress illustrations shown in the terminal report.
+QQQ_LOSS_TARGET = -0.10
+EQUITY_LOSS_TARGET = -0.15
+
+#: Placeholder for a contributor that does not exist in a scenario.
+_NONE_LABEL = "n/a"
 
 
 def _section(title: str) -> None:
@@ -38,6 +47,15 @@ def _num(value: float, decimals: int = 2) -> str:
     return f"{value:,.{decimals}f}"
 
 
+def _money(value: float, decimals: int = 0) -> str:
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.{decimals}f}"
+
+
+def _label(value: object) -> str:
+    return _NONE_LABEL if value is None or pd.isna(value) else str(value)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 1 portfolio analytics demo.")
     parser.add_argument("--start", default=config.DEFAULT_START_DATE, help="First date (YYYY-MM-DD).")
@@ -51,6 +69,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-save", action="store_true", help="Do not write CSV results to outputs/."
+    )
+    parser.add_argument(
+        "--portfolio-value",
+        type=float,
+        default=config.DEFAULT_PORTFOLIO_VALUE,
+        help="Notional value used to express stress results in dollars.",
     )
     return parser.parse_args(argv)
 
@@ -197,6 +221,187 @@ def print_tail_risk_comparison(table: pd.DataFrame) -> None:
     )
 
 
+def print_stress_summary(table: pd.DataFrame, portfolio_value: float) -> None:
+    _section("Stress test summary")
+    print(f"  Starting portfolio value: {_money(portfolio_value)}\n")
+    header = (
+        f"  {'Scenario':<30}{'Return':>9}{'Dollar P&L':>13}{'Stressed Val':>14}"
+        f"{'Loss':>6}{'Hedge':>6}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name, row in table.iterrows():
+        print(
+            f"  {str(name):<30}"
+            f"{_pct(row['Portfolio Stress Return']):>9}"
+            f"{_money(row['Dollar P&L']):>13}"
+            f"{_money(row['Stressed Portfolio Value']):>14}"
+            f"{_label(row['Largest Loss Contributor']):>6}"
+            f"{_label(row['Largest Hedge / Offset']):>6}"
+        )
+    print(
+        "\n  Scenarios are analyst-specified assumptions, not forecasts, and carry no"
+        "\n  probability. 'Loss' is the largest loss contributor, 'Hedge' the largest"
+        "\n  offsetting position."
+    )
+
+
+def print_worst_scenario_detail(summary: pd.Series) -> None:
+    _section("Worst scenario detail")
+    print(f"  Scenario   : {summary['Scenario Name']} ({summary['Category']})")
+    description = str(summary["Description"])
+    for line in _wrap(description, LINE_WIDTH - 15):
+        print(f"  {'':<11}{line}")
+    print(f"\n  {'Portfolio loss':<32}{_pct(summary['Portfolio Stress Return']):>14}")
+    print(f"  {'Dollar loss':<32}{_money(summary['Portfolio P&L']):>14}")
+    print(f"  {'Stressed portfolio value':<32}{_money(summary['Stressed Portfolio Value']):>14}")
+    print(
+        f"  {'Largest loss contributor':<32}"
+        f"{_label(summary['Largest Loss Contributor']):>14}"
+    )
+    print(f"  {'Largest hedge / offset':<32}{_label(summary['Largest Hedge / Offset']):>14}")
+    if "Baseline Annualized Volatility" in summary.index:
+        print(
+            f"  {'Baseline annualized volatility':<32}"
+            f"{_pct(summary['Baseline Annualized Volatility']):>14}"
+        )
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    """Greedy word wrap used for scenario descriptions."""
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > width and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def print_asset_stress_contribution(table: pd.DataFrame) -> None:
+    _section("Asset stress contribution")
+    header = (
+        f"  {'Asset':<7}{'Weight':>8}{'Shock':>9}{'Allocation':>14}"
+        f"{'Stress P&L':>13}{'Loss Contr.':>13}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset, row in table.iterrows():
+        loss_share = row["Contribution to Total Loss %"]
+        print(
+            f"  {asset:<7}"
+            f"{_pct(row['Weight'], 1):>8}"
+            f"{_pct(row['Scenario Shock'], 1):>9}"
+            f"{_money(row['Starting Allocation']):>14}"
+            f"{_money(row['Stress P&L']):>13}"
+            f"{(_pct(loss_share, 1) if pd.notna(loss_share) else _NONE_LABEL):>13}"
+        )
+    print("  " + "-" * (len(header) - 2))
+    print(
+        f"  {'TOTAL':<7}"
+        f"{_pct(float(table['Weight'].sum()), 1):>8}"
+        f"{'':>9}"
+        f"{_money(float(table['Starting Allocation'].sum())):>14}"
+        f"{_money(float(table['Stress P&L'].sum())):>13}"
+        f"{_pct(float(table['Contribution to Total Loss %'].sum()), 1):>13}"
+    )
+    print(
+        "\n  Loss contribution is each position's P&L as a share of the gross loss."
+        "\n  Hedging assets show a negative share and pull the total below 100%."
+    )
+
+
+def print_historical_stress_events(events: pd.DataFrame) -> None:
+    _section("Historical stress events")
+    header = (
+        f"  {'Horizon':<9}{'Start':>12}{'End':>12}{'Portfolio':>11}"
+        f"{'Worst':>7}{'Worst Ret.':>12}{'Top Loss':>11}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for horizon, row in events.iterrows():
+        print(
+            f"  {str(horizon):<9}"
+            f"{str(pd.Timestamp(row['Start Date']).date()):>12}"
+            f"{str(pd.Timestamp(row['End Date']).date()):>12}"
+            f"{_pct(row['Portfolio Return']):>11}"
+            f"{str(row['Worst Asset']):>7}"
+            f"{_pct(row['Worst Asset Return']):>12}"
+            f"{_label(row['Largest Loss Contributor']):>11}"
+        )
+    print(
+        "\n  Windows are selected on the portfolio return series; every asset is then"
+        "\n  measured over that same window, so the cross-asset moves actually occurred"
+        "\n  together. Multi-day figures are compounded, not scaled."
+    )
+
+
+def print_reverse_stress(results: list[pd.Series]) -> None:
+    _section("Reverse stress test")
+    for result in results:
+        target = float(result["Target Portfolio Return"])
+        shock = float(result["Required Shock"])
+        assets = str(result["Shocked Assets"])
+        print(f"  Target portfolio loss of {_pct(target)} from {assets}")
+        print(f"    Combined weight  : {_pct(float(result['Combined Weight']), 1)}")
+        if result["Feasible"]:
+            print(f"    Required shock   : {_pct(shock)}")
+        else:
+            print(f"    Required shock   : {_pct(shock)}  [IMPOSSIBLE: below -100%]")
+        print(f"    Check            : implies {_pct(float(result['Implied Portfolio Return']))}")
+        print()
+    print(
+        "  Answers depend entirely on which assets are allowed to move: concentrating"
+        "\n  the shock in a small position demands a far more extreme move."
+    )
+
+
+def print_correlation_stress(report: pd.Series) -> None:
+    _section("Correlation stress")
+    print(f"  Stressed pairs : {report['Stressed Assets']}")
+    print(
+        f"  Correlation    : {_num(float(report['Average Baseline Correlation']))} average "
+        f"-> {_num(float(report['Target Correlation']))} target"
+    )
+    rows = [
+        ("Baseline annualized volatility", _pct(report["Baseline Portfolio Volatility"])),
+        ("Stressed annualized volatility", _pct(report["Stressed Portfolio Volatility"])),
+        ("Volatility increase", _pct(report["Volatility Increase %"])),
+        ("Baseline diversification ratio", _num(report["Baseline Diversification Ratio"])),
+        ("Stressed diversification ratio", _num(report["Stressed Diversification Ratio"])),
+        ("PSD repair applied", "yes" if report["PSD Repair Applied"] else "no"),
+    ]
+    print()
+    for label, value in rows:
+        print(f"  {label:<34}{value:>12}")
+    print(
+        "\n  This is a volatility statement, not a scenario loss: asset volatilities are"
+        "\n  held fixed and only the correlations change."
+    )
+
+
+def _library_for(tickers: list[str]) -> list[stress.Scenario]:
+    """Adapt the predefined library to the configured universe.
+
+    The library is written for the default ETF universe. If the portfolio has
+    been reconfigured, shocks for instruments that are no longer held are dropped
+    explicitly and any newly held asset is left unshocked.
+    """
+    universe = {t.strip().upper() for t in tickers}
+    library_assets = {asset for s in stress.PREDEFINED_SCENARIOS for asset in s.assets}
+    if universe == library_assets:
+        return list(stress.PREDEFINED_SCENARIOS)
+    print(
+        f"\n  [scenario note] Predefined shocks cover {sorted(library_assets)}; "
+        f"restricting them to the configured universe {sorted(universe)}."
+    )
+    return [s.restricted_to(universe) for s in stress.PREDEFINED_SCENARIOS]
+
+
 def _save_outputs(tables: dict[str, pd.DataFrame | pd.Series]) -> None:
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for name, table in tables.items():
@@ -259,6 +464,36 @@ def main(argv: list[str] | None = None) -> int:
         portfolio_series, cfg.var_confidence_levels, cfg.risk_horizons
     )
 
+    annual_cov = pf.covariance_matrix(market.returns, annualize=True)
+    scenarios = _library_for(cfg.tickers)
+    scenario_comparison = stress.compare_scenarios(
+        cfg.weights, scenarios, args.portfolio_value
+    )
+    worst_scenario = stress.get_scenario(str(scenario_comparison.index[0])).restricted_to(
+        cfg.tickers
+    )
+    worst_detail = stress.stress_summary(
+        cfg.weights, worst_scenario, args.portfolio_value, covariance=annual_cov
+    )
+    worst_contribution = stress.stress_pnl_table(
+        cfg.weights, worst_scenario, args.portfolio_value
+    )
+    events = stress.historical_stress_events(
+        market.returns, cfg.weights, cfg.historical_event_horizons
+    )
+    reverse = [
+        stress.reverse_stress_shock(cfg.weights, "QQQ", QQQ_LOSS_TARGET),
+        stress.reverse_stress_shock(
+            cfg.weights, list(cfg.equity_group), EQUITY_LOSS_TARGET
+        ),
+    ]
+    correlation_stress = stress.correlation_stress_report(
+        cfg.weights,
+        annual_cov,
+        target_correlation=cfg.stress_correlation_target,
+        assets=list(cfg.equity_group),
+    )
+
     print_summary(summary)
     print_asset_statistics(stats, contributions)
     print_return_contribution(contributions, float(summary["Cumulative Return"]))
@@ -268,6 +503,12 @@ def main(argv: list[str] | None = None) -> int:
         risk_table, float(risk_metrics["Portfolio Annualized Volatility"])
     )
     print_tail_risk_comparison(tail_risk)
+    print_stress_summary(scenario_comparison, args.portfolio_value)
+    print_worst_scenario_detail(worst_detail)
+    print_asset_stress_contribution(worst_contribution)
+    print_historical_stress_events(events)
+    print_reverse_stress(reverse)
+    print_correlation_stress(correlation_stress)
 
     if not args.no_save:
         _save_outputs(
@@ -286,6 +527,10 @@ def main(argv: list[str] | None = None) -> int:
                     risk_free_rate=cfg.risk_free_rate,
                     periods_per_year=cfg.trading_days_per_year,
                 ),
+                "scenario_comparison": scenario_comparison,
+                "worst_scenario_contribution": worst_contribution,
+                "historical_stress_events": events,
+                "correlation_stress": correlation_stress,
             }
         )
 

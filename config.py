@@ -48,6 +48,18 @@ ROLLING_WINDOW: int = 252
 RISK_HORIZON_SHORT: int = 1
 RISK_HORIZON_LONG: int = 10
 
+#: Notional portfolio value used to express stress results in currency terms.
+DEFAULT_PORTFOLIO_VALUE: float = 1_000_000.0
+
+#: Equity sleeve used for grouped reverse stress and correlation stress.
+EQUITY_GROUP: tuple[str, ...] = ("SPY", "QQQ", "IWM", "EFA")
+
+#: Correlation that stressed pairs are pushed toward in the correlation-stress tool.
+STRESS_CORRELATION_TARGET: float = 0.95
+
+#: Lookback windows (trading days) for worst historical portfolio periods.
+HISTORICAL_EVENT_HORIZONS: tuple[int, ...] = (1, 5, 10)
+
 #: Default multi-asset portfolio: US large cap, US tech, US small cap,
 #: developed international equity, long Treasuries, IG credit, gold.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -75,6 +87,10 @@ class PortfolioConfig:
     var_confidence_levels: tuple[float, ...] = (VAR_CONFIDENCE_95, VAR_CONFIDENCE_99)
     risk_horizons: tuple[int, ...] = (RISK_HORIZON_SHORT, RISK_HORIZON_LONG)
     rolling_window: int = ROLLING_WINDOW
+    portfolio_value: float = DEFAULT_PORTFOLIO_VALUE
+    equity_group: tuple[str, ...] = EQUITY_GROUP
+    stress_correlation_target: float = STRESS_CORRELATION_TARGET
+    historical_event_horizons: tuple[int, ...] = HISTORICAL_EVENT_HORIZONS
 
     @property
     def tickers(self) -> list[str]:

@@ -51,6 +51,7 @@ import config
 from src import portfolio as pf
 
 __all__ = [
+    "validate_covariance",
     "overlapping_horizon_returns",
     "historical_var",
     "historical_cvar",
@@ -132,7 +133,7 @@ def _validate_window(window: int, n_observations: int) -> int:
     return int(window)
 
 
-def _validate_covariance(covariance: pd.DataFrame) -> pd.DataFrame:
+def validate_covariance(covariance: pd.DataFrame) -> pd.DataFrame:
     """Validate a covariance matrix: square, labelled, finite, symmetric.
 
     Raises:
@@ -170,7 +171,7 @@ def _align_weights_to_covariance(
     covariance: pd.DataFrame,
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Validate weights and covariance jointly and align them to one ordering."""
-    cov = _validate_covariance(covariance)
+    cov = validate_covariance(covariance)
     w = pf.validate_weights(weights, assets=cov.index)
     return w, cov.loc[w.index, w.index]
 
