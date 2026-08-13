@@ -8,9 +8,10 @@ drawdowns, cross-asset correlation, and return attribution.
 
 The platform is being built in phases. **This repository currently contains
 Phase 1 (market data engine and core portfolio analytics), Phase 2 (the
-portfolio risk engine), Phase 3 (stress testing and scenario analysis) and
-Phase 4 (Monte Carlo simulation).** Every later phase (optimization, dashboard)
-is designed to consume the same data and analytics primitives.
+portfolio risk engine), Phase 3 (stress testing and scenario analysis), Phase 4
+(Monte Carlo simulation) and Phase 5 (portfolio optimization).** Every later
+phase (factor modeling, dashboard) is designed to consume the same data and
+analytics primitives.
 
 ---
 
@@ -78,21 +79,35 @@ is designed to consume the same data and analytics primitives.
 - Path-dependent probabilities (ever underwater, severe drawdown, recovery, round trip).
 - Method comparison and baseline-versus-stressed-covariance regime comparison.
 
+## Phase 5 capabilities
+
+**Optimization engine (`src/optimization.py`)**
+- Constrained minimum-volatility and maximum-Sharpe optimization via SLSQP with analytic gradients.
+- Target-return optimization and a full constrained efficient frontier.
+- A generic constraint system: per-asset bounds, asset-specific overrides and group exposure limits.
+- Explicit feasibility validation that refuses to silently relax an impossible constraint set.
+- Independent post-solve constraint verification, so a solver's success flag is never taken on trust.
+- Three expected-return estimators (geometric, arithmetic, shrunk) with configurable shrinkage.
+- Concentration diagnostics: maximum weight, Herfindahl index, effective number of holdings, turnover.
+- Expected-return sensitivity analysis that quantifies how unstable maximum-Sharpe weights are.
+- Integration with the Phase 2 risk engine, Phase 3 scenarios and Phase 4 simulation.
+
 **Terminal report (`app.py`)** — portfolio summary, asset-level statistics,
 return contribution, correlation matrix, risk summary, risk contribution, a
 historical-versus-Gaussian tail risk comparison, the stress scenario table, the
 worst scenario in detail with asset attribution, historical stress events,
 reverse stress results, a correlation stress comparison, the Monte Carlo
-simulation summary, a simulation method comparison and a covariance-stress
-simulation, with the realized data range stated explicitly. Results are also
-written to `outputs/` as CSV.
+simulation summary, a simulation method comparison, a covariance-stress
+simulation, the optimization comparison, optimized weights, an efficient-frontier
+summary, expected-return model sensitivity, and the optimized portfolios run back
+through the risk, stress and simulation engines — with the realized data range
+stated explicitly. Results are also written to `outputs/` as CSV.
 
 ## Planned capabilities
 
 | Phase | Scope |
 | --- | --- |
-| 5 | Factor exposure analysis (equity/rate/credit/commodity proxies, rolling betas) |
-| 6 | Portfolio optimization (minimum variance, maximum Sharpe, constrained frontiers) |
+| 6 | Factor exposure analysis (equity/rate/credit/commodity proxies, rolling betas) |
 | 7 | Interactive Streamlit dashboard over the same analytics layer |
 
 Candidate extensions to the existing risk engine: Cornish-Fisher (modified) VaR,
@@ -115,13 +130,15 @@ portfolio-risk-platform/
 │   ├── portfolio.py          # Performance analytics (pure functions)
 │   ├── risk.py               # Tail risk, risk decomposition, rolling analytics
 │   ├── stress.py             # Scenarios, stress P&L, historical events, reverse stress
-│   └── monte_carlo.py        # Return simulators, portfolio paths, simulated risk
+│   ├── monte_carlo.py        # Return simulators, portfolio paths, simulated risk
+│   └── optimization.py       # Constraints, mean-variance optimizers, frontier, sensitivity
 └── tests/
     ├── __init__.py
     ├── test_portfolio.py     # Deterministic offline unit tests (Phase 1)
     ├── test_risk.py          # Deterministic offline unit tests (Phase 2)
     ├── test_stress.py        # Deterministic offline unit tests (Phase 3)
-    └── test_monte_carlo.py   # Deterministic offline unit tests (Phase 4)
+    ├── test_monte_carlo.py   # Deterministic offline unit tests (Phase 4)
+    └── test_optimization.py  # Deterministic offline unit tests (Phase 5)
 ```
 
 Design principles: configuration is centralized in `config.py`, the data layer
@@ -145,6 +162,9 @@ config.py  ->  data_loader.download_price_history   (adjusted daily prices)
            ->  stress.correlation_stress_report     (volatility under lost diversification)
            ->  monte_carlo.run_simulation           (forward distribution of outcomes)
            ->  monte_carlo.compare_simulation_methods / stressed_regime_comparison
+           ->  optimization.minimum_volatility / maximum_sharpe / efficient_frontier
+           ->  optimization.expected_return_sensitivity  (how much to trust the above)
+           ->  optimization.optimized_risk / stress / simulation_comparison
            ->  app.py (terminal report) and outputs/*.csv
 ```
 
@@ -157,6 +177,12 @@ and `diversification_metrics` for the correlation-stress comparison.
 `monte_carlo.py` sits on top of all three: it reuses covariance validation, the
 empirical VaR/CVaR kernels from `risk.py` rather than reimplementing tail logic,
 and `stress.stress_correlations` to build the stressed simulation regime.
+`optimization.py` sits on top of everything: `risk.portfolio_volatility` is the
+single implementation of `sqrt(w' Sigma w)` used by the objective functions,
+`pf.asset_annualized_returns` supplies the geometric return estimate, and the
+optimized allocations are handed straight back to `risk.historical_var`,
+`stress.stress_portfolio_return` and `monte_carlo.run_simulation` so an optimized
+portfolio is evaluated by exactly the same machinery as the current one.
 
 ## Methodology
 
@@ -395,6 +421,84 @@ draws. Both properties are asserted in the test suite.
 normal laptop, entirely vectorized with no Python loop over paths. The transient
 asset cube is about 140 MB and is released before the analytics run.
 
+### Optimization methodology (Phase 5)
+
+Phase 5 changes the question from "how risky is this portfolio?" to "what should
+the portfolio be?" — and then spends as much effort on how little that answer can
+be trusted.
+
+**Frequency and Sharpe conventions.** Everything in the optimizer is annual:
+expected returns are annualized and the covariance must be annualized to match.
+The optimizer's Sharpe ratio is the mean-variance ratio `(mu_p - rf) / sigma_p`
+built from the *expected-return vector*, so it deliberately differs from the
+realized Sharpe ratio reported in the performance section, which works from daily
+excess returns and de-annualizes the risk-free rate geometrically. The two are
+never compared directly.
+
+| Problem | Objective | Depends on |
+| --- | --- | --- |
+| Minimum volatility | minimize `w' Sigma w` | covariance only |
+| Maximum Sharpe | maximize `(w'mu - rf) / sqrt(w' Sigma w)` | covariance **and** expected returns |
+| Target return | minimize `w' Sigma w` s.t. `w'mu = target` | both |
+| Efficient frontier | target-return problem solved across the feasible range | both |
+
+**Solver.** SLSQP with analytic gradients for both the variance and Sharpe
+objectives. The Sharpe objective is not convex, so it is started from several
+feasible points — an even spread across the bounds, a covariance-tilted point and
+a return-greedy corner — and the best verified solution wins. Near-zero
+volatility returns a large penalty instead of dividing by zero, so a degenerate
+covariance can never manufacture an infinite Sharpe ratio.
+
+**Solver results are not trusted.** Every solution is independently re-checked
+against the budget, box and group constraints, and any breach beyond `1e-6` is
+reported as a failure with the violation named, regardless of what the solver
+claimed. Bound violations below `1e-9` are solver rounding and are snapped to the
+bound; anything larger is a genuine failure. Infeasible constraint sets are
+rejected up front — a silently relaxed constraint would make the answer a fiction.
+
+**Constraints.** The defaults are long-only with a 40% per-asset cap plus sleeve
+limits (equities 40–80%, fixed income 10–50%, alternatives 0–20%). These are not
+cosmetic: an unconstrained maximum-Sharpe portfolio routinely puts everything
+into one or two assets, and the constraints are what make the output an
+allocation rather than a curiosity. Per-asset overrides are supported, e.g.
+`{"TLT": (0.05, 0.30)}`.
+
+**Concentration.** `HHI = sum(w_i^2)`, and the effective number of holdings is
+`1 / HHI` — the size of the equal-weight portfolio with the same concentration. A
+seven-asset portfolio with an effective count of 3.3 is a three-asset bet whatever
+its nominal breadth. Turnover uses the one-way convention
+`0.5 * sum(|w_new - w_current|)`, so 0.30 means 30% of the portfolio changes
+hands, not 60%.
+
+**Expected-return estimators.** Geometric (the Phase 1 compounded convention),
+arithmetic (the daily mean annualized, theoretically the consistent input for
+single-period mean-variance), and shrunk:
+`mu_shrunk = alpha * mu_asset + (1 - alpha) * mean(mu)`. Shrinkage is a
+deliberately one-line, inspectable rule, not a black-box return model. Its
+rationale is that cross-sectional differences in historical mean returns are
+mostly estimation noise, and `alpha` is an explicit statement of how much of that
+noise you are willing to act on. At `alpha = 0` every asset shares one expected
+return and the maximum-Sharpe problem collapses exactly onto minimum volatility.
+
+**Model risk is measured, not hidden.** `expected_return_sensitivity` shifts one
+asset's expected return by ±1 and ±2 percentage points, re-solves the
+maximum-Sharpe problem, and reports the turnover from the baseline optimum. Those
+shifts are far *smaller* than the standard error of a historical mean estimate, so
+the resulting turnover is a lower bound on how arbitrary the "optimal" weights
+are. The minimum-volatility portfolio is included throughout as a control: because
+it uses only the covariance matrix, it is provably unmoved by any expected-return
+perturbation, and the tests assert exactly that.
+
+**Integration.** Optimized allocations are pushed back through the earlier
+engines. Historical VaR and CVaR are recomputed by applying the optimized weights
+to the historical asset-return matrix and measuring the resulting series directly
+— never by scaling the current portfolio's VaR, which would assume the optimized
+portfolio has the same distributional shape and would defeat the comparison.
+Stress returns come from the Phase 3 engine and the simulation comparison from the
+Phase 4 engine at a reduced path count (2,000 rather than 10,000, since three
+portfolios are simulated), which is documented in the report itself because it
+makes the sampling error larger.
+
 ## Installation
 
 ```bash
@@ -449,7 +553,10 @@ portfolio value, an equity group of SPY/QQQ/IWM/EFA for grouped reverse stress
 and correlation stress, a 0.95 stressed-correlation target, and worst-window
 horizons of 1, 5 and 10 trading days. Scenario definitions themselves live in
 `src/stress.py`, not in the global config. Simulation conventions: 10,000 paths,
-a 252-trading-day horizon, seed 42 and 10-day bootstrap blocks.
+a 252-trading-day horizon, seed 42 and 10-day bootstrap blocks. Optimization
+conventions: long-only with a 40% per-asset cap, the sleeve limits in
+`GROUP_LIMITS`, 50% shrinkage intensity, 25 frontier points, and 2,000 paths for
+the optimized-portfolio simulation comparison.
 
 ## Running the tests
 
@@ -466,7 +573,10 @@ covariance algebra) rather than copied from program output. Simulation tests are
 seeded and kept small; where a statistical property is being asserted, such as
 convergence of the simulated covariance to its target, the tolerance is stated
 explicitly and the drawdown engine is additionally checked against a brute-force
-loop implementation.
+loop implementation. Optimization tests assert closed-form mean-variance
+solutions — the two-asset minimum-variance weight and the tangency portfolio
+`Sigma^-1 (mu - rf)` — and separately re-check every optimized solution against
+its constraints instead of trusting the solver's success flag.
 
 ## Risk limitations you must read before using the numbers
 
@@ -570,6 +680,49 @@ loop implementation.
   data says that regime will occur.
 - **A simulated 252-day VaR is not a daily VaR.** Terminal-horizon and one-day
   measures answer different questions and are never comparable.
+
+## Optimization limitations you must read before using the weights
+
+The single most important thing to understand about Phase 5 is that its outputs
+look far more precise than they are. Shrinkage and sensitivity analysis are
+included specifically to expose that, not to decorate it.
+
+- **Optimized weights are extremely sensitive to their inputs.** Shifting one
+  asset's expected return by a single percentage point can move a quarter of the
+  portfolio. The report quantifies this rather than presenting one allocation as
+  the answer.
+- **Expected returns are much harder to estimate than covariance.** Volatilities
+  and correlations converge reasonably quickly with daily data; mean returns do
+  not. A decade of history still leaves standard errors on annual mean returns of
+  several percentage points — larger than the perturbations that reshuffle the
+  optimizer's output.
+- **Historical means are noisy and are not forecasts.** Using them as expected
+  returns implicitly forecasts that the past decade's winners keep winning, which
+  is why the shrunk estimator exists.
+- **Maximum-Sharpe portfolios concentrate.** Left unconstrained they load onto
+  whichever assets had the best realized risk-adjusted return, which is an
+  estimation artefact as much as a fact. The per-asset cap and group limits are
+  doing real work, and the effective-holdings metric shows how much.
+- **Constraints materially determine the result.** Change the caps and you change
+  the "optimal" portfolio. The optimum is a property of the constraint set as much
+  as of the data, and several reported solutions sit exactly on their bounds.
+- **Covariance is not stable either.** It is estimated over one sample period and
+  assumed fixed, while Phase 3 and Phase 4 both demonstrate that correlations move
+  sharply in stress.
+- **Transaction costs, taxes and market impact are not modelled.** Every
+  rebalance is free in this framework, which it never is in practice.
+- **Turnover may make an optimized portfolio impractical.** A 35% one-way
+  turnover is a real trading decision with real costs, and it is reported next to
+  every optimized allocation for that reason.
+- **The efficient frontier is model-dependent.** It is the efficient frontier *of
+  this expected-return vector, this covariance estimate and this constraint set* —
+  not of markets.
+- **Historical optimality does not imply future optimality.** The portfolio that
+  would have been best over the sample is not the portfolio that will be best next
+  year, and nothing in this repository claims otherwise.
+- **Single-period mean-variance ignores higher moments.** Skew, kurtosis and path
+  dependency are invisible to the objective, which is precisely why optimized
+  portfolios are handed back to the stress and simulation engines.
 
 ## Assumptions and limitations (data and performance)
 

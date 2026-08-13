@@ -20,6 +20,7 @@ import pandas as pd
 
 import config
 from src import monte_carlo as mc
+from src import optimization as opt
 from src import portfolio as pf
 from src import risk
 from src import stress
@@ -37,6 +38,19 @@ _NONE_LABEL = "n/a"
 #: Terminal-friendly abbreviations for the simulation method names.
 _SHORT_METHOD_LABELS = {"Historical Bootstrap": "Bootstrap", "Block Bootstrap": "Block Boot."}
 
+#: Portfolio labels used across every Phase 5 comparison table.
+CURRENT = "Current"
+MIN_VOL = "Min Vol"
+MAX_SHARPE = "Max Sharpe"
+
+#: Scenarios shown in the optimized stress comparison.
+OPTIMIZED_STRESS_SCENARIOS = (
+    "Global Equity Crash",
+    "Rates +200bp",
+    "Inflation Shock",
+    "Credit Stress",
+)
+
 
 def _section(title: str) -> None:
     print(f"\n{title.upper()}")
@@ -44,7 +58,10 @@ def _section(title: str) -> None:
 
 
 def _pct(value: float, decimals: int = 2) -> str:
-    return f"{value * 100:,.{decimals}f}%"
+    scaled = value * 100.0
+    if abs(scaled) < 0.5 * 10.0**-decimals:
+        scaled = abs(scaled)  # a rounded-away negative should not print as "-0.0%"
+    return f"{scaled:,.{decimals}f}%"
 
 
 def _num(value: float, decimals: int = 2) -> str:
@@ -467,7 +484,12 @@ def _print_transposed(
         cells = ""
         for name in table.index:
             value = float(table.loc[name, column])
-            formatted = _money(value) if kind == "money" else _pct(value)
+            if kind == "money":
+                formatted = _money(value)
+            elif kind == "num":
+                formatted = _num(value)
+            else:
+                formatted = _pct(value)
             if name in signed_rows and value >= 0:
                 formatted = f"+{formatted}"
             cells += f"{formatted:>{column_width}}"
@@ -515,6 +537,158 @@ def print_regime_comparison(table: pd.DataFrame) -> None:
         "\n  Both regimes share one seed and one mean vector, so the change is caused"
         "\n  only by correlations rising toward the stress target. The Change column"
         "\n  shows stressed minus baseline."
+    )
+
+
+def print_optimization(table: pd.DataFrame) -> None:
+    _section("Portfolio optimization")
+    _print_transposed(
+        table,
+        [
+            ("Expected Return", "pct"),
+            ("Volatility", "pct"),
+            ("Sharpe Ratio", "num"),
+            ("Maximum Weight", "pct"),
+            ("Effective Holdings", "num"),
+            ("Turnover vs Current", "pct"),
+        ],
+    )
+    print(
+        "\n  Expected returns are annualized historical geometric estimates and the"
+        "\n  Sharpe ratios are mean-variance ratios built from them, so they differ"
+        "\n  from the realized Sharpe reported earlier. Turnover is one-way:"
+        "\n  0.5 * sum of absolute weight changes."
+    )
+
+
+def print_optimized_weights(table: pd.DataFrame, portfolios: list[str]) -> None:
+    _section("Optimized weights")
+    header = f"  {'Asset':<8}" + "".join(f"{name:>12}" for name in portfolios)
+    header += f"{'MinVol-Cur':>12}{'MaxShrp-Cur':>13}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset, row in table.iterrows():
+        cells = "".join(f"{_pct(row[name], 1):>12}" for name in portfolios)
+        cells += f"{_pct(row[f'{MIN_VOL} - {CURRENT}'], 1):>12}"
+        cells += f"{_pct(row[f'{MAX_SHARPE} - {CURRENT}'], 1):>13}"
+        print(f"  {str(asset):<8}{cells}")
+    totals = "".join(f"{_pct(float(table[name].sum()), 1):>12}" for name in portfolios)
+    print(f"  {'TOTAL':<8}{totals}")
+
+
+def print_frontier(highlights: pd.DataFrame, n_points: int) -> None:
+    _section("Efficient frontier summary")
+    print(f"  {n_points} target returns solved; five representative points shown.\n")
+    header = f"  {'Frontier Point':<26}{'Target Return':>15}{'Volatility':>13}{'Sharpe':>9}{'Solved':>9}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for label, row in highlights.iterrows():
+        print(
+            f"  {str(label):<26}{_pct(row['Target Return']):>15}"
+            f"{_pct(row['Volatility']):>13}{_num(row['Sharpe Ratio']):>9}"
+            f"{('yes' if row['Success'] else 'NO'):>9}"
+        )
+
+
+def print_return_model_sensitivity(
+    methods: pd.DataFrame, sensitivity: pd.DataFrame
+) -> None:
+    _section("Expected return model sensitivity")
+    print("  Maximum-Sharpe allocation under each expected-return estimator\n")
+    header = (
+        f"  {'Return Method':<16}{'Exp Return':>12}{'Volatility':>12}"
+        f"{'Sharpe':>9}{'Max Wt':>9}{'Eff Hldgs':>11}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for method in methods.index.get_level_values(0).unique():
+        row = methods.loc[(method, "Max Sharpe")]
+        print(
+            f"  {str(method):<16}{_pct(row['Expected Return']):>12}"
+            f"{_pct(row['Volatility']):>12}{_num(row['Sharpe Ratio']):>9}"
+            f"{_pct(row['Maximum Weight'], 1):>9}{_num(row['Effective Holdings']):>11}"
+        )
+    min_vol = methods.xs("Min Volatility", level="Objective")
+    print(
+        f"\n  Minimum volatility is {_pct(float(min_vol['Volatility'].iloc[0]))} under every"
+        " estimator: it uses\n  only the covariance matrix, so expected-return model risk"
+        " cannot touch it."
+    )
+
+    print("\n  Turnover from the baseline optimum after shifting one expected return")
+    shifts = sorted(sensitivity.index.get_level_values("Return Shift").unique())
+    header = f"  {'Asset':<10}" + "".join(f"{_pct(s, 0):>13}" for s in shifts)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset in sensitivity.index.get_level_values("Asset").unique():
+        cells = "".join(
+            f"{_pct(float(sensitivity.loc[(asset, shift), 'Turnover vs Baseline']), 1):>13}"
+            for shift in shifts
+        )
+        print(f"  {str(asset):<10}{cells}")
+    worst = sensitivity["Turnover vs Baseline"].max()
+    print(
+        f"\n  A {_pct(max(abs(s) for s in shifts), 0)} change in one asset's expected return"
+        f" moves up to {_pct(worst, 1)} of the\n  portfolio. That is far smaller than the"
+        " standard error of a historical mean,\n  so these weights carry much less precision"
+        " than they appear to."
+    )
+
+
+def print_optimized_risk(table: pd.DataFrame, confidence: float) -> None:
+    _section("Optimized portfolio risk")
+    var_column = f"Historical VaR {confidence:.0%} (1D)"
+    cvar_column = f"Historical CVaR {confidence:.0%} (1D)"
+    header = (
+        f"  {'Portfolio':<14}{'Ann Vol':>10}{'VaR 95%':>10}{'CVaR 95%':>10}"
+        f"{'Div Ratio':>11}{'Largest Risk':>15}{'Share':>8}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name, row in table.iterrows():
+        print(
+            f"  {str(name):<14}{_pct(row['Annualized Volatility']):>10}"
+            f"{_pct(row[var_column]):>10}{_pct(row[cvar_column]):>10}"
+            f"{_num(row['Diversification Ratio']):>11}"
+            f"{str(row['Largest Risk Contributor']):>15}"
+            f"{_pct(row['Largest Risk Contribution %'], 0):>8}"
+        )
+    print(
+        "\n  VaR and CVaR are measured on each allocation's own historical return"
+        "\n  series, not scaled from the current portfolio."
+    )
+
+
+def print_optimized_stress(table: pd.DataFrame, portfolios: list[str]) -> None:
+    _section("Optimized portfolio stress test")
+    header = f"  {'Scenario':<28}" + "".join(f"{name:>16}" for name in portfolios)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for scenario, row in table.iterrows():
+        cells = "".join(f"{_pct(row[name]):>16}" for name in portfolios)
+        print(f"  {str(scenario):<28}{cells}")
+    print(
+        "\n  Deterministic scenario returns from the Phase 3 engine: the weighted sum"
+        "\n  of assumed asset shocks, with no probability attached."
+    )
+
+
+def print_optimized_simulation(table: pd.DataFrame, n_paths: int, confidence: float) -> None:
+    _section("Optimized portfolio Monte Carlo")
+    print(
+        f"  {n_paths:,} paths per portfolio, identical horizon and seed."
+        " Fewer paths than the\n  headline simulation because three portfolios are run,"
+        " so sampling error is\n  larger and small differences should not be over-read.\n"
+    )
+    _print_transposed(
+        table,
+        [
+            ("Median Ending Value", "money"),
+            ("Probability of Loss", "pct"),
+            ("5th Percentile Ending Value", "money"),
+            (f"Simulated VaR {confidence:.0%}", "pct"),
+            ("Median Maximum Drawdown", "pct"),
+        ],
     )
 
 
@@ -657,6 +831,62 @@ def main(argv: list[str] | None = None) -> int:
         **simulation_settings,
     )
 
+    print("Optimizing allocations and tracing the efficient frontier...")
+    confidence = cfg.var_confidence_levels[0]
+    mu = opt.expected_returns(market.returns, "geometric", cfg.trading_days_per_year)
+    constraints = opt.default_constraints(market.tickers)
+    min_vol = opt.minimum_volatility(annual_cov, mu, constraints, cfg.risk_free_rate)
+    max_sharpe = opt.maximum_sharpe(mu, annual_cov, constraints, cfg.risk_free_rate)
+    for result in (min_vol, max_sharpe):
+        if not result.success:
+            warnings.warn(
+                f"{result.objective} optimization did not verify: {result.message}",
+                stacklevel=1,
+            )
+    allocations = {
+        CURRENT: pf.validate_weights(cfg.weights, assets=market.tickers),
+        MIN_VOL: min_vol.weights,
+        MAX_SHARPE: max_sharpe.weights,
+    }
+    optimization_table = opt.compare_portfolios(
+        allocations, mu, annual_cov, risk_free_rate=cfg.risk_free_rate
+    )
+    weight_table = opt.weight_comparison_table(allocations, assets=market.tickers)
+    frontier, frontier_weights = opt.efficient_frontier(
+        mu, annual_cov, constraints, cfg.frontier_points, cfg.risk_free_rate
+    )
+    highlights = opt.frontier_highlights(frontier)
+    return_methods = opt.shrinkage_comparison(
+        market.returns,
+        annual_cov,
+        allocations[CURRENT],
+        constraints,
+        alpha=cfg.return_shrinkage_alpha,
+        risk_free_rate=cfg.risk_free_rate,
+        periods_per_year=cfg.trading_days_per_year,
+    )
+    sensitivity = opt.expected_return_sensitivity(
+        mu, annual_cov, constraints, cfg.sensitivity_shifts, cfg.risk_free_rate
+    )
+    optimized_risk = opt.optimized_risk_comparison(
+        allocations, market.returns, annual_cov, confidence, cfg.trading_days_per_year
+    )
+    optimized_stress = opt.optimized_stress_comparison(
+        allocations,
+        [stress.get_scenario(name) for name in OPTIMIZED_STRESS_SCENARIOS],
+        args.portfolio_value,
+        assets=market.tickers,
+    )
+    optimized_simulation = opt.optimized_simulation_comparison(
+        allocations,
+        market.returns,
+        n_paths=cfg.optimization_simulation_paths,
+        horizon=cfg.monte_carlo_horizon,
+        initial_value=args.portfolio_value,
+        seed=args.mc_seed,
+        confidence=confidence,
+    )
+
     print_summary(summary)
     print_asset_statistics(stats, contributions)
     print_return_contribution(contributions, float(summary["Cumulative Return"]))
@@ -677,6 +907,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     print_method_comparison(method_comparison)
     print_regime_comparison(regime_comparison)
+    print_optimization(optimization_table)
+    print_optimized_weights(weight_table, [CURRENT, MIN_VOL, MAX_SHARPE])
+    print_frontier(highlights, len(frontier))
+    print_return_model_sensitivity(return_methods, sensitivity)
+    print_optimized_risk(optimized_risk, confidence)
+    print_optimized_stress(optimized_stress, [CURRENT, MIN_VOL, MAX_SHARPE])
+    print_optimized_simulation(
+        optimized_simulation, cfg.optimization_simulation_paths, confidence
+    )
 
     if not args.no_save:
         _save_outputs(
@@ -706,6 +945,17 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 "simulation_method_comparison": method_comparison,
                 "simulation_regime_comparison": regime_comparison,
+                "optimization_summary": opt.optimization_summary(
+                    allocations[CURRENT], mu, annual_cov, constraints, cfg.risk_free_rate
+                ),
+                "optimization_comparison": optimization_table,
+                "optimized_weights": weight_table,
+                "efficient_frontier": frontier.join(frontier_weights),
+                "expected_return_methods": return_methods,
+                "expected_return_sensitivity": sensitivity,
+                "optimized_risk": optimized_risk,
+                "optimized_stress": optimized_stress,
+                "optimized_simulation": optimized_simulation,
             }
         )
 

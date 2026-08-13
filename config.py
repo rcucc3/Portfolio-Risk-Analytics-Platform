@@ -69,6 +69,40 @@ MONTE_CARLO_SEED: int = 42
 #: Block length (trading days) for the moving-block bootstrap.
 MONTE_CARLO_BLOCK_LENGTH: int = 10
 
+#: Default long-only allocation bounds applied to every asset by the optimizer.
+#: The cap keeps mean-variance solutions from collapsing into one or two names.
+MIN_ASSET_WEIGHT: float = 0.0
+MAX_ASSET_WEIGHT: float = 0.40
+
+#: Asset sleeves used for group allocation constraints.
+ASSET_GROUPS: dict[str, tuple[str, ...]] = {
+    "Equities": ("SPY", "QQQ", "IWM", "EFA"),
+    "Fixed Income": ("TLT", "LQD"),
+    "Alternatives": ("GLD",),
+}
+
+#: Minimum and maximum total exposure per sleeve, as ``{group: (min, max)}``.
+GROUP_LIMITS: dict[str, tuple[float, float]] = {
+    "Equities": (0.40, 0.80),
+    "Fixed Income": (0.10, 0.50),
+    "Alternatives": (0.00, 0.20),
+}
+
+#: Weight on the raw asset estimate in the shrinkage expected-return model;
+#: ``1 - alpha`` is placed on the cross-sectional mean.
+RETURN_SHRINKAGE_ALPHA: float = 0.50
+
+#: Number of target returns used to trace the efficient frontier.
+FRONTIER_POINTS: int = 25
+
+#: Expected-return perturbations (in annual return terms) used to expose the
+#: instability of maximum-Sharpe allocations.
+SENSITIVITY_SHIFTS: tuple[float, ...] = (-0.02, -0.01, 0.01, 0.02)
+
+#: Path count for the optimized-portfolio simulation comparison. Deliberately
+#: lower than MONTE_CARLO_PATHS because three portfolios are simulated.
+OPTIMIZATION_SIMULATION_PATHS: int = 2_000
+
 #: Default multi-asset portfolio: US large cap, US tech, US small cap,
 #: developed international equity, long Treasuries, IG credit, gold.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -104,6 +138,18 @@ class PortfolioConfig:
     monte_carlo_horizon: int = MONTE_CARLO_HORIZON
     monte_carlo_seed: int = MONTE_CARLO_SEED
     monte_carlo_block_length: int = MONTE_CARLO_BLOCK_LENGTH
+    min_asset_weight: float = MIN_ASSET_WEIGHT
+    max_asset_weight: float = MAX_ASSET_WEIGHT
+    asset_groups: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(ASSET_GROUPS)
+    )
+    group_limits: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: dict(GROUP_LIMITS)
+    )
+    return_shrinkage_alpha: float = RETURN_SHRINKAGE_ALPHA
+    frontier_points: int = FRONTIER_POINTS
+    sensitivity_shifts: tuple[float, ...] = SENSITIVITY_SHIFTS
+    optimization_simulation_paths: int = OPTIMIZATION_SIMULATION_PATHS
 
     @property
     def tickers(self) -> list[str]:
