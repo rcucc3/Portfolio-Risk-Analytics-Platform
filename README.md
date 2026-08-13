@@ -9,9 +9,9 @@ drawdowns, cross-asset correlation, and return attribution.
 The platform is being built in phases. **This repository currently contains
 Phase 1 (market data engine and core portfolio analytics), Phase 2 (the
 portfolio risk engine), Phase 3 (stress testing and scenario analysis), Phase 4
-(Monte Carlo simulation) and Phase 5 (portfolio optimization).** Every later
-phase (factor modeling, dashboard) is designed to consume the same data and
-analytics primitives.
+(Monte Carlo simulation), Phase 5 (portfolio optimization) and Phase 6 (factor
+exposure and factor risk).** The remaining phase (dashboard) is designed to
+consume the same data and analytics primitives.
 
 ---
 
@@ -92,6 +92,23 @@ analytics primitives.
 - Expected-return sensitivity analysis that quantifies how unstable maximum-Sharpe weights are.
 - Integration with the Phase 2 risk engine, Phase 3 scenarios and Phase 4 simulation.
 
+## Phase 6 capabilities
+
+**Factor engine (`src/factors.py`)**
+- Academic Fama-French + momentum loader (Ken French daily files, percent converted to decimals, cached).
+- Tradeable proxy factor set from instruments not held in the portfolio, with spread construction for credit and international equity.
+- Explicit date intersection of asset and factor returns; never forward filled.
+- Excess-return OLS with intercept, SVD least squares, collinearity rejection, R-squared, residual volatility, standard errors and t-statistics.
+- Asset-level loadings and weighted portfolio factor exposures with contribution tables.
+- Arithmetic daily factor attribution plus a compounding residual so the decomposition is honest.
+- Factor-implied covariance `B Sigma_f B' + D` with diagonal or full residual covariance.
+- Euler factor-risk contributions (not `beta^2 * var`, because the factors are correlated).
+- Asset-level idiosyncratic risk after systematic factors are stripped out.
+- Rolling betas with no look-ahead, plus stability diagnostics (min/max/std of rolling betas).
+- Linear factor-shock translation into asset shocks, priced by the existing Phase 3 engine.
+- Transparent covariance shrinkage toward the factor-implied matrix, with exact endpoints.
+- Re-optimization of min-vol and max-Sharpe under sample, factor-implied and shrunk covariance.
+
 **Terminal report (`app.py`)** — portfolio summary, asset-level statistics,
 return contribution, correlation matrix, risk summary, risk contribution, a
 historical-versus-Gaussian tail risk comparison, the stress scenario table, the
@@ -99,15 +116,18 @@ worst scenario in detail with asset attribution, historical stress events,
 reverse stress results, a correlation stress comparison, the Monte Carlo
 simulation summary, a simulation method comparison, a covariance-stress
 simulation, the optimization comparison, optimized weights, an efficient-frontier
-summary, expected-return model sensitivity, and the optimized portfolios run back
-through the risk, stress and simulation engines — with the realized data range
-stated explicitly. Results are also written to `outputs/` as CSV.
+summary, expected-return model sensitivity, the optimized portfolios run back
+through the risk, stress and simulation engines, factor exposures, asset
+loadings, systematic vs idiosyncratic risk, factor stress tests, current vs
+optimized factor exposures, and covariance-model comparison — with the realized
+data range stated explicitly. Results are also written to `outputs/` as CSV.
+If the Ken French source is unreachable the factor section is skipped and the
+rest of the report still completes.
 
 ## Planned capabilities
 
 | Phase | Scope |
 | --- | --- |
-| 6 | Factor exposure analysis (equity/rate/credit/commodity proxies, rolling betas) |
 | 7 | Interactive Streamlit dashboard over the same analytics layer |
 
 Candidate extensions to the existing risk engine: Cornish-Fisher (modified) VaR,
@@ -131,14 +151,16 @@ portfolio-risk-platform/
 │   ├── risk.py               # Tail risk, risk decomposition, rolling analytics
 │   ├── stress.py             # Scenarios, stress P&L, historical events, reverse stress
 │   ├── monte_carlo.py        # Return simulators, portfolio paths, simulated risk
-│   └── optimization.py       # Constraints, mean-variance optimizers, frontier, sensitivity
+│   ├── optimization.py       # Constraints, mean-variance optimizers, frontier, sensitivity
+│   └── factors.py            # Factor regression, risk decomposition, stress, structured covariance
 └── tests/
     ├── __init__.py
     ├── test_portfolio.py     # Deterministic offline unit tests (Phase 1)
     ├── test_risk.py          # Deterministic offline unit tests (Phase 2)
     ├── test_stress.py        # Deterministic offline unit tests (Phase 3)
     ├── test_monte_carlo.py   # Deterministic offline unit tests (Phase 4)
-    └── test_optimization.py  # Deterministic offline unit tests (Phase 5)
+    ├── test_optimization.py  # Deterministic offline unit tests (Phase 5)
+    └── test_factors.py       # Deterministic offline unit tests (Phase 6)
 ```
 
 Design principles: configuration is centralized in `config.py`, the data layer
@@ -165,6 +187,9 @@ config.py  ->  data_loader.download_price_history   (adjusted daily prices)
            ->  optimization.minimum_volatility / maximum_sharpe / efficient_frontier
            ->  optimization.expected_return_sensitivity  (how much to trust the above)
            ->  optimization.optimized_risk / stress / simulation_comparison
+           ->  factors.fit_factor_model / factor_risk_decomposition
+           ->  factors.factor_stress_scenario  (priced by the Phase 3 engine)
+           ->  factors.shrink_covariance / optimization_under_covariance_models
            ->  app.py (terminal report) and outputs/*.csv
 ```
 
@@ -183,6 +208,10 @@ single implementation of `sqrt(w' Sigma w)` used by the objective functions,
 optimized allocations are handed straight back to `risk.historical_var`,
 `stress.stress_portfolio_return` and `monte_carlo.run_simulation` so an optimized
 portfolio is evaluated by exactly the same machinery as the current one.
+`factors.py` sits on top of the same stack: it reuses return validation, covariance
+validation, Euler risk contributions (now in factor space), Phase 3 P&L for
+factor shocks, and the Phase 5 optimizer for structured-covariance comparisons.
+It never reimplements those calculations.
 
 ## Methodology
 
@@ -499,6 +528,71 @@ Phase 4 engine at a reduced path count (2,000 rather than 10,000, since three
 portfolios are simulated), which is documented in the report itself because it
 makes the sampling error larger.
 
+### Factor methodology (Phase 6)
+
+Phase 6 asks what the assets have in common. Seven holdings can still be one
+market bet; the factor engine is how that is measured rather than assumed.
+
+**Two factor sets, and they are not equivalent.** Academic factors are the Ken
+French daily Fama-French three-factor set plus momentum: long-short, cash-neutral
+research portfolios with a genuine risk-premium interpretation, published as
+percent and converted to decimals on load. Tradeable proxies are liquid ETFs
+standing in for US equity, duration, credit, commodities and international
+equity. They are directional, correlated, and **not** academic factors. Proxy
+instruments are deliberately absent from the portfolio so the regressions are not
+circular. Credit and international equity are constructed as spreads so they do
+not simply re-express market and duration.
+
+**Excess returns.** When the factor set supplies a risk-free rate, every asset
+return is converted to excess return `r_i - r_f` before regression, because the
+market factor is itself an excess return. Mixing total returns with excess
+factors would load the intercept with the risk-free rate and bias every beta.
+Units are daily decimals throughout.
+
+**Alignment.** Asset and factor dates are intersected. Nothing is forward filled.
+The published academic series lags market prices by weeks, so the regression
+sample ends earlier than the price history and that truncation is reported.
+
+**Regression.** Ordinary least squares with intercept,
+`r_i,t - r_f,t = alpha_i + beta_i' F_t + epsilon_i,t`, solved by SVD
+(`numpy.linalg.lstsq`). Exact or numerical collinearity is rejected rather than
+returning a pseudo-inverse solution. The architecture does not hard-code four
+factors: the loading matrix takes its columns from whatever factor frame is
+supplied.
+
+**Portfolio exposure.** `b_p = B' w`. Contribution tables for each factor sum
+exactly to that portfolio beta. Portfolio R-squared is obtained by regressing the
+portfolio's own excess series, not by averaging asset R-squared values.
+
+**Attribution.** Daily modeled excess return is `alpha + sum_k b_p,k * f_k,t`.
+Those daily pieces are summed arithmetically. Compounded realized growth is
+reported separately, and the gap between them is labelled as a compounding
+effect rather than forced into the factor columns. Residual is the part of
+arithmetic excess return the model does not explain.
+
+**Risk model.** `Sigma = B Sigma_f B' + D`. `D` is diagonal by default: residuals
+are treated as asset-specific, so remaining co-movement is attributed to omitted
+factors rather than modelled. Systematic variance is `b_p' Sigma_f b_p` and
+idiosyncratic variance is `w' D w = sum_i w_i^2 s_i^2`. They sum identically to
+total factor-implied variance. Factor risk contributions use Euler shares of
+systematic volatility, because `beta_k^2 var(f_k)` double-counts correlated
+factors and does not add up.
+
+**Rolling betas.** The value at date `t` uses only the `window` observations
+ending at `t`. The first `window - 1` dates are omitted, not back-filled.
+
+**Factor stress.** A factor shock becomes asset shocks by `s = B f`. Alpha is
+excluded: a stress horizon is not a period over which an estimated intercept
+should be extrapolated. The implied asset shocks are wrapped in a Phase 3
+`Scenario` and priced by the existing P&L engine, so factor stress and asset
+stress cannot disagree about how a shock becomes a dollar. This is a linear
+approximation and is labelled as one.
+
+**Covariance shrinkage.** `Sigma_shrunk = lambda * Sigma_sample + (1 - lambda) *
+Sigma_factor`. Lambda is a stated modelling choice, not an optimized quantity.
+`lambda = 1` is the sample matrix and `lambda = 0` is the factor-implied matrix.
+Any convex combination of two PSD matrices is PSD.
+
 ## Installation
 
 ```bash
@@ -556,7 +650,10 @@ horizons of 1, 5 and 10 trading days. Scenario definitions themselves live in
 a 252-trading-day horizon, seed 42 and 10-day bootstrap blocks. Optimization
 conventions: long-only with a 40% per-asset cap, the sleeve limits in
 `GROUP_LIMITS`, 50% shrinkage intensity, 25 frontier points, and 2,000 paths for
-the optimized-portfolio simulation comparison.
+the optimized-portfolio simulation comparison. Factor conventions: a 252-day
+rolling beta window, 50% covariance-shrinkage intensity toward the factor-implied
+matrix, and the proxy-factor definitions in `PROXY_FACTOR_DEFINITIONS`. Academic
+factor scenarios live in `src/factors.py`, not in the global config.
 
 ## Running the tests
 
@@ -576,7 +673,12 @@ explicitly and the drawdown engine is additionally checked against a brute-force
 loop implementation. Optimization tests assert closed-form mean-variance
 solutions — the two-asset minimum-variance weight and the tangency portfolio
 `Sigma^-1 (mu - rf)` — and separately re-check every optimized solution against
-its constraints instead of trusting the solver's success flag.
+its constraints instead of trusting the solver's success flag. Factor tests
+recover known OLS coefficients against an independent least-squares
+recomputation, assert `B Sigma_f B' + D` on a hand-built example, confirm that
+rolling betas use no future observations, and check that factor-stress P&L
+reconciles through the Phase 3 engine. The Ken French loader is never called
+from the test suite.
 
 ## Risk limitations you must read before using the numbers
 
@@ -723,6 +825,42 @@ included specifically to expose that, not to decorate it.
 - **Single-period mean-variance ignores higher moments.** Skew, kurtosis and path
   dependency are invisible to the objective, which is precisely why optimized
   portfolios are handed back to the stress and simulation engines.
+
+## Factor limitations you must read before using the exposures
+
+- **A factor model is an approximation.** It explains a share of co-movement and
+  attributes the rest to residual. That residual is not "noise"; it is everything
+  the chosen factors do not span.
+- **Betas are unstable through time.** A full-sample market beta of 1.0 can hide
+  a rolling range of 0.6 to 1.3. The stability table exists because a single
+  number is a summary, not a constant.
+- **Factors are correlated.** Value and momentum in particular move together.
+  Standalone `beta^2 * variance` contributions would double-count that shared
+  risk, which is why the engine uses Euler contributions.
+- **Omitted factors become residual risk.** Gold's low academic R-squared is not
+  a bug: the Fama-French set has no commodity factor. Using the proxy set raises
+  gold's R-squared for reasons of construction, not insight.
+- **R-squared is not causation.** A high R-squared says the factors track the
+  asset over the sample. It does not say the factors caused the returns, and it
+  does not say they will keep tracking them.
+- **Historical factors do not guarantee future explanatory power.** The loadings
+  are estimated on one sample and treated as fixed in stress and covariance work.
+- **ETF proxy factors are not academic factors.** They are directional, overlapping
+  with the holdings economically even when they are not in the portfolio, and they
+  carry no long-short construction. Reports label the two sets separately.
+- **Linear factor stresses ignore nonlinear behavior.** A -25% market shock
+  applied through daily betas assumes those betas hold at crisis magnitudes and
+  that residuals are zero. Convexity, liquidity gaps and forced selling are
+  invisible.
+- **Factor covariance is estimated with error.** `Sigma_f` is a sample matrix of
+  the factor returns, with the same estimation issues as any covariance.
+- **Shrinkage target and lambda are modelling choices.** There is no uniquely
+  correct blend of sample and factor-implied covariance. The comparison exists to
+  show that the optimizer's answer moves when the covariance model moves.
+- **Optimization remains sensitive to both expected returns and covariance.**
+  Phase 5 showed that a 2% expected-return perturbation can turn over a quarter of
+  the book. Phase 6 shows that changing the covariance model also changes weights.
+  Neither input is known; both are estimated.
 
 ## Assumptions and limitations (data and performance)
 

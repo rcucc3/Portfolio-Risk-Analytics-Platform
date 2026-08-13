@@ -2,8 +2,12 @@
 
 Loads the default multi-asset portfolio from ``config.py``, downloads adjusted
 market data, and prints performance, asset-level, correlation, tail-risk,
-risk-decomposition and stress-testing diagnostics. A Streamlit front end will
-consume the same functions in a later phase.
+risk-decomposition, stress-testing, simulation, optimization and factor
+diagnostics. A Streamlit front end will consume the same functions in a later
+phase.
+
+The factor section depends on an external factor source; if it is unreachable the
+report prints a note and continues rather than failing.
 
 Usage:
     python app.py [--start 2015-01-01] [--end 2025-12-31] [--refresh] [--no-save]
@@ -19,6 +23,7 @@ import warnings
 import pandas as pd
 
 import config
+from src import factors as fx
 from src import monte_carlo as mc
 from src import optimization as opt
 from src import portfolio as pf
@@ -692,6 +697,269 @@ def print_optimized_simulation(table: pd.DataFrame, n_paths: int, confidence: fl
     )
 
 
+def print_factor_exposure(
+    summary: pd.Series, exposures: pd.Series, contributions: pd.DataFrame, source: str
+) -> None:
+    _section("Factor exposure summary")
+    print(
+        f"  {summary['Factor Set']}, {int(summary['Observations']):,} daily observations "
+        f"{summary['Sample Start'].date()} to {summary['Sample End'].date()}\n"
+        f"  {source}\n"
+    )
+    header = f"  {'Factor':<10}{'Portfolio Beta':>16}{'Largest Contributor':>22}{'Its Share':>12}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for factor in exposures.index:
+        column = f"Contribution: {factor}"
+        share = contributions[column]
+        leader = share.abs().idxmax()
+        print(
+            f"  {str(factor):<10}{_num(exposures[factor], 3):>16}{str(leader):>22}"
+            f"{_num(float(share[leader]), 3):>12}"
+        )
+    print(
+        f"\n  Model R-squared {_pct(summary['Model R-Squared'], 1)} on the portfolio's own"
+        f" excess return series.\n  Betas are exposures to daily factor returns, aggregated"
+        " as the weighted sum of\n  asset betas. Excess returns are net of the daily"
+        " risk-free rate supplied with\n  the factor data."
+    )
+
+
+def print_asset_loadings(table: pd.DataFrame, factors: list[str]) -> None:
+    _section("Asset factor loadings")
+    header = f"  {'Asset':<7}{'Alpha':>9}" + "".join(f"{name[:7]:>9}" for name in factors)
+    header += f"{'R2':>8}{'Resid Vol':>11}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset, row in table.iterrows():
+        cells = "".join(f"{_num(row[f'Beta: {name}'], 3):>9}" for name in factors)
+        print(
+            f"  {str(asset):<7}{_pct(row['Alpha (Ann.)'], 1):>9}{cells}"
+            f"{_num(row['R-Squared'], 3):>8}{_pct(row['Residual Volatility'], 1):>11}"
+        )
+    print(
+        "\n  Alpha is annualized from the daily intercept and is not a skill claim: for"
+        "\n  an asset the factors barely explain, everything the model cannot price"
+        "\n  lands in alpha and residual volatility. Residual volatility is annualized."
+    )
+
+
+def print_factor_risk_decomposition(
+    decomposition: pd.Series, contributions: pd.DataFrame, residuals: pd.DataFrame
+) -> None:
+    _section("Factor risk decomposition")
+    rows = [
+        ("Total factor-implied volatility", _pct(decomposition["Total Factor-Implied Volatility"])),
+        ("Systematic volatility", _pct(decomposition["Systematic Volatility"])),
+        ("Idiosyncratic volatility", _pct(decomposition["Idiosyncratic Volatility"])),
+        ("Systematic share of variance", _pct(decomposition["Systematic Risk %"], 1)),
+        ("Idiosyncratic share of variance", _pct(decomposition["Idiosyncratic Risk %"], 1)),
+    ]
+    for label, value in rows:
+        print(f"  {label:<44}{value:>14}")
+
+    print("\n  Systematic risk by factor (Euler contributions)")
+    header = f"  {'Factor':<10}{'Exposure':>12}{'Marginal':>12}{'Component Vol':>16}{'Share':>10}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for factor, row in contributions.iterrows():
+        print(
+            f"  {str(factor):<10}{_num(row['Portfolio Exposure'], 3):>12}"
+            f"{_num(row['Marginal Contribution'], 3):>12}"
+            f"{_pct(row['Component Volatility']):>16}"
+            f"{_pct(row['Risk Contribution %'], 1):>10}"
+        )
+
+    print("\n  Idiosyncratic risk by asset (after factors are stripped out)")
+    header = f"  {'Asset':<10}{'Weight':>10}{'Resid Vol':>12}{'Variance Share':>17}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset, row in residuals.iterrows():
+        print(
+            f"  {str(asset):<10}{_pct(row['Weight'], 1):>10}"
+            f"{_pct(row['Residual Volatility'], 1):>12}"
+            f"{_pct(row['Variance Contribution %'], 1):>17}"
+        )
+    print(
+        "\n  Shares are of variance, which is what decomposes additively. Factor"
+        "\n  contributions use the Euler method because the factors are correlated,"
+        "\n  so squared-beta contributions would not reconcile to systematic risk."
+    )
+
+
+def print_factor_stability(stability: pd.DataFrame, market_factor: str, window: int) -> None:
+    _section(f"Factor beta stability ({window}-day rolling)")
+    market = stability.xs(market_factor, level="Factor")
+    header = (
+        f"  {'Asset':<8}{'Full Sample':>13}{'Rolling Min':>13}{'Rolling Max':>13}"
+        f"{'Std Dev':>10}{'Latest':>10}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for asset, row in market.iterrows():
+        print(
+            f"  {str(asset):<8}{_num(row['Full-Sample Beta'], 3):>13}"
+            f"{_num(row['Rolling Min'], 3):>13}{_num(row['Rolling Max'], 3):>13}"
+            f"{_num(row['Rolling Std Dev'], 3):>10}{_num(row['Latest Rolling Beta'], 3):>10}"
+        )
+    widest = (stability["Rolling Max"] - stability["Rolling Min"]).idxmax()
+    spread = float(
+        stability.loc[widest, "Rolling Max"] - stability.loc[widest, "Rolling Min"]
+    )
+    print(
+        f"\n  {market_factor} beta is shown per asset; the widest rolling range across all"
+        f"\n  asset-factor pairs is {widest[0]} on {widest[1]}, spanning {_num(spread, 2)} beta"
+        " units. A single\n  full-sample beta hides that much variation."
+    )
+
+
+def print_factor_stress(
+    table: pd.DataFrame, scenarios: tuple[fx.FactorScenario, ...], factors: list[str]
+) -> None:
+    _section("Factor stress tests")
+    print("  Assumed factor shocks")
+    header = f"  {'Scenario':<24}" + "".join(f"{name[:7]:>9}" for name in factors)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    by_name = {s.name: s for s in scenarios}
+    for scenario in table.index:
+        shocks = by_name[str(scenario)].as_series().reindex(factors).fillna(0.0)
+        cells = "".join(f"{_pct(shocks[name], 0):>9}" for name in factors)
+        print(f"  {str(scenario):<24}{cells}")
+
+    print("\n  Portfolio impact")
+    header = (
+        f"  {'Scenario':<24}{'Category':<10}{'Return':>10}{'Worst':>9}{'Hedge':>9}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for scenario, row in table.iterrows():
+        print(
+            f"  {str(scenario):<24}{str(row['Category']):<10}"
+            f"{_pct(row['Portfolio Stress Return'], 1):>10}"
+            f"{_label(row['Largest Loss Contributor']):>9}"
+            f"{_label(row['Largest Hedge / Offset']):>9}"
+        )
+    print(
+        "\n  Asset shocks are the linear factor approximation B * factor shocks, priced"
+        "\n  through the Phase 3 engine. Alpha and residual moves are set to zero, and"
+        "\n  betas estimated on daily data are assumed to hold at crisis magnitudes."
+        "\n  These are internally consistent assumptions, not forecasts."
+    )
+
+
+def print_factor_comparison(table: pd.DataFrame, factors: list[str]) -> None:
+    _section("Current vs optimized factor exposures")
+    header = f"  {'Metric':<26}" + "".join(f"{str(name):>16}" for name in table.index)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for factor in factors:
+        cells = "".join(
+            f"{_num(float(table.loc[name, f'Beta: {factor}']), 3):>16}" for name in table.index
+        )
+        print(f"  {'Beta: ' + factor:<26}{cells}")
+    for label, column, kind in [
+        ("Systematic risk %", "Systematic Risk %", "pct"),
+        ("Idiosyncratic risk %", "Idiosyncratic Risk %", "pct"),
+        ("Factor-implied volatility", "Total Factor-Implied Volatility", "pct"),
+        ("Model R-squared", "R-Squared", "num"),
+    ]:
+        cells = "".join(
+            (
+                f"{_pct(float(table.loc[name, column]), 1):>16}"
+                if kind == "pct"
+                else f"{_num(float(table.loc[name, column]), 3):>16}"
+            )
+            for name in table.index
+        )
+        print(f"  {label:<26}{cells}")
+    cells = "".join(
+        f"{str(table.loc[name, 'Largest Factor Risk Contributor']):>16}" for name in table.index
+    )
+    print(f"  {'Largest factor risk':<26}{cells}")
+
+
+def print_covariance_models(table: pd.DataFrame, shrinkage_lambda: float) -> None:
+    _section("Covariance model comparison")
+    print(
+        f"  Shrunk = {shrinkage_lambda:.0%} sample + {1 - shrinkage_lambda:.0%} factor-implied.\n"
+    )
+    header = (
+        f"  {'Covariance Model':<18}{'Port Vol':>11}{'Cond Number':>13}"
+        f"{'Min Eigenvalue':>16}{'Frobenius Diff':>16}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name, row in table.iterrows():
+        print(
+            f"  {str(name):<18}{_pct(row['Portfolio Volatility']):>11}"
+            f"{_num(row['Condition Number'], 1):>13}"
+            f"{row['Minimum Eigenvalue']:>16.2e}{row['Frobenius Difference']:>16.4f}"
+        )
+    print(
+        "\n  Differences are measured against the sample covariance. A lower condition"
+        "\n  number means an optimizer can amplify estimation error less when it"
+        "\n  effectively inverts the matrix; none of the three is objectively correct."
+    )
+
+
+def print_optimization_under_covariance(table: pd.DataFrame, reference: str) -> None:
+    _section("Optimization under covariance models")
+    yardstick = f"{reference} Vol"
+    header = (
+        f"  {'Objective':<12}{'Covariance':<16}{'Own Vol':>10}{yardstick:>12}"
+        f"{'Sharpe':>8}{'Max Wt':>8}{'Eff Hldg':>10}{'Turnover':>10}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    scored = "Volatility (Common Yardstick)" in table.columns
+    for (objective, model), row in table.iterrows():
+        common = (
+            _pct(float(row["Volatility (Common Yardstick)"]), 1) if scored else "n/a"
+        )
+        short = (
+            str(objective)
+            .replace("Minimum Volatility", "Min Vol")
+            .replace("Maximum Sharpe", "Max Sharpe")
+        )
+        print(
+            f"  {short:<12}{str(model):<16}"
+            f"{_pct(float(row['Volatility']), 1):>10}{common:>12}"
+            f"{_num(float(row['Sharpe Ratio'])):>8}"
+            f"{_pct(float(row['Maximum Weight']), 0):>8}"
+            f"{_num(float(row['Effective Holdings'])):>10}"
+            f"{_pct(float(row['Turnover vs Current']), 0):>10}"
+        )
+    if "Violations" in table.columns:
+        for index, violations in table["Violations"].dropna().items():
+            print(f"  [constraint violation] {index}: {violations}")
+    print(
+        "\n  'Own Vol' grades each solution with the covariance that produced it, which"
+        f"\n  flatters a model that understates risk. The {reference} column re-scores every"
+        "\n  solution on one yardstick, and there the sample-covariance portfolios win by"
+        "\n  construction, because that is the matrix they were fitted to. Covariance"
+        "\n  choice moves the allocation as much as expected-return choice did in Phase 5."
+    )
+
+
+def print_factor_model_comparison(table: pd.DataFrame) -> None:
+    _section("Factor model comparison")
+    header = f"  {'Factor Set':<26}{'Factors':>9}{'Portfolio R2':>14}{'Mean Asset R2':>15}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name, row in table.iterrows():
+        print(
+            f"  {str(name)[:25]:<26}{int(row['Factors']):>9}"
+            f"{_num(row['Portfolio R-Squared'], 3):>14}{_num(row['Mean Asset R-Squared'], 3):>15}"
+        )
+    print(
+        "\n  The proxy set explains more because its factors are liquid instruments that"
+        "\n  overlap economically with the holdings, not because it is a better risk"
+        "\n  model. Academic factors are long-short research portfolios and are the only"
+        "\n  set here with a risk-premium interpretation."
+    )
+
+
 def _library_for(tickers: list[str]) -> list[stress.Scenario]:
     """Adapt the predefined library to the configured universe.
 
@@ -708,6 +976,45 @@ def _library_for(tickers: list[str]) -> list[stress.Scenario]:
         f"restricting them to the configured universe {sorted(universe)}."
     )
     return [s.restricted_to(universe) for s in stress.PREDEFINED_SCENARIOS]
+
+
+def _factor_model_comparison(
+    cfg: config.PortfolioConfig,
+    market: MarketData,
+    weights: pd.Series,
+    academic: fx.FactorModel,
+    use_cache: bool,
+) -> pd.DataFrame | None:
+    """Compare the academic factor set with the tradeable proxy set.
+
+    The proxy set needs its own download, so a failure here degrades to ``None``
+    and drops one table instead of the whole factor section.
+    """
+    try:
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            proxy_data = fx.load_proxy_factors(
+                start=cfg.start_date,
+                end=cfg.end_date,
+                risk_free_rate=cfg.risk_free_rate,
+                use_cache=use_cache,
+            )
+            proxy = fx.fit_factor_model(market.returns, proxy_data)
+    except Exception as exc:  # noqa: BLE001 - any provider failure is non-fatal here
+        print(f"  [factor note] proxy factor set unavailable: {exc}")
+        return None
+
+    rows = {}
+    for label, model in {academic.kind: academic, proxy.kind: proxy}.items():
+        portfolio_excess = model.excess_returns[model.assets] @ weights
+        fit = fx.factor_regression(portfolio_excess, model.factors, asset="Portfolio")
+        rows[label] = {
+            "Factors": len(model.factor_names),
+            "Portfolio R-Squared": fit.r_squared,
+            "Mean Asset R-Squared": float(model.r_squared.mean()),
+            "Observations": model.n_observations,
+        }
+    return pd.DataFrame(rows).T
 
 
 def _save_outputs(tables: dict[str, pd.DataFrame | pd.Series]) -> None:
@@ -887,6 +1194,106 @@ def main(argv: list[str] | None = None) -> int:
         confidence=confidence,
     )
 
+    print("Fitting the factor model and structured covariance estimates...")
+    factor_tables: dict[str, pd.DataFrame | pd.Series] = {}
+    factor_model: fx.FactorModel | None = None
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            factor_data = fx.load_fama_french_factors(
+                start=cfg.start_date,
+                end=cfg.end_date,
+                use_cache=not args.refresh,
+                min_observations=cfg.min_observations,
+            )
+            factor_model = fx.fit_factor_model(market.returns, factor_data)
+        for warning in caught:
+            print(f"  [factor warning] {warning.message}")
+    except Exception as exc:  # noqa: BLE001 - the factor source is external
+        print(f"  [factor note] factor analytics skipped: {exc}")
+
+    if factor_model is not None:
+        current = allocations[CURRENT]
+        factor_exposures = fx.portfolio_factor_exposures(current, factor_model.betas)
+        exposure_contributions = fx.factor_exposure_contributions(current, factor_model)
+        loadings = fx.factor_loadings_table(
+            factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        attribution = fx.factor_return_attribution(
+            current, factor_model, cfg.trading_days_per_year
+        )
+        decomposition = fx.factor_risk_decomposition(
+            current, factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        factor_contributions = fx.factor_risk_contributions(
+            current, factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        residual_contributions = fx.idiosyncratic_risk_contributions(
+            current, factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        stability = fx.factor_beta_stability(factor_model, cfg.factor_rolling_window)
+        factor_stress = fx.compare_factor_scenarios(
+            current, factor_model, portfolio_value=args.portfolio_value
+        )
+        factor_comparison = fx.compare_portfolio_factor_exposures(
+            allocations, factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        factor_kpis = fx.factor_summary(
+            current,
+            factor_model,
+            stability=stability,
+            window=cfg.factor_rolling_window,
+            periods_per_year=cfg.trading_days_per_year,
+        )
+        model_comparison = _factor_model_comparison(
+            cfg, market, current, factor_model, use_cache=not args.refresh
+        )
+
+        # The sample covariance is recomputed on the factor sample's dates so the
+        # comparison is like-for-like: the published factors lag the price data,
+        # and a matrix estimated over a longer window is a different estimate.
+        aligned_cov = pf.covariance_matrix(
+            market.returns.loc[factor_model.factors.index], annualize=True
+        )
+        implied_cov = fx.factor_implied_covariance(
+            factor_model, periods_per_year=cfg.trading_days_per_year
+        )
+        shrunk_cov = fx.shrink_covariance(
+            aligned_cov, implied_cov, cfg.covariance_shrinkage_lambda
+        )
+        covariance_models = {
+            "Sample": aligned_cov,
+            "Factor-Implied": implied_cov,
+            "Shrunk": shrunk_cov,
+        }
+        covariance_diagnostics = fx.covariance_comparison(
+            covariance_models, current, reference="Sample"
+        )
+        covariance_optimization = fx.optimization_under_covariance_models(
+            mu,
+            covariance_models,
+            current_weights=current,
+            constraints=constraints,
+            risk_free_rate=cfg.risk_free_rate,
+            evaluation_covariance="Sample",
+        )
+        factor_tables = {
+            "factor_summary": factor_kpis,
+            "factor_loadings": loadings,
+            "factor_exposure_contributions": exposure_contributions,
+            "factor_return_attribution": attribution,
+            "factor_risk_decomposition": decomposition,
+            "factor_risk_contributions": factor_contributions,
+            "factor_idiosyncratic_risk": residual_contributions,
+            "factor_beta_stability": stability,
+            "factor_stress_comparison": factor_stress,
+            "factor_exposure_comparison": factor_comparison,
+            "covariance_model_diagnostics": covariance_diagnostics,
+            "covariance_model_optimization": covariance_optimization,
+        }
+        if model_comparison is not None:
+            factor_tables["factor_model_comparison"] = model_comparison
+
     print_summary(summary)
     print_asset_statistics(stats, contributions)
     print_return_contribution(contributions, float(summary["Cumulative Return"]))
@@ -916,6 +1323,26 @@ def main(argv: list[str] | None = None) -> int:
     print_optimized_simulation(
         optimized_simulation, cfg.optimization_simulation_paths, confidence
     )
+
+    if factor_model is not None:
+        print_factor_exposure(
+            factor_kpis, factor_exposures, exposure_contributions, factor_model.source
+        )
+        print_asset_loadings(loadings, factor_model.factor_names)
+        print_factor_risk_decomposition(
+            decomposition, factor_contributions, residual_contributions
+        )
+        print_factor_stability(
+            stability, str(factor_kpis["Market Factor"]), cfg.factor_rolling_window
+        )
+        print_factor_stress(
+            factor_stress, fx.FACTOR_STRESS_SCENARIOS, factor_model.factor_names
+        )
+        print_factor_comparison(factor_comparison, factor_model.factor_names)
+        if model_comparison is not None:
+            print_factor_model_comparison(model_comparison)
+        print_covariance_models(covariance_diagnostics, cfg.covariance_shrinkage_lambda)
+        print_optimization_under_covariance(covariance_optimization, "Sample")
 
     if not args.no_save:
         _save_outputs(
@@ -956,6 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
                 "optimized_risk": optimized_risk,
                 "optimized_stress": optimized_stress,
                 "optimized_simulation": optimized_simulation,
+                **factor_tables,
             }
         )
 

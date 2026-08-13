@@ -103,6 +103,25 @@ SENSITIVITY_SHIFTS: tuple[float, ...] = (-0.02, -0.01, 0.01, 0.02)
 #: lower than MONTE_CARLO_PATHS because three portfolios are simulated.
 OPTIMIZATION_SIMULATION_PATHS: int = 2_000
 
+#: Window (trading days) for rolling factor regressions.
+FACTOR_ROLLING_WINDOW: int = 252
+
+#: Weight on the sample covariance when shrinking toward a structured target;
+#: ``1 - lambda`` is placed on the target.
+COVARIANCE_SHRINKAGE_LAMBDA: float = 0.50
+
+#: Tradeable proxy factors, built from instruments deliberately *not* held in the
+#: portfolio so the regressions are not circular. Spread factors are differences
+#: (e.g. credit = high yield minus duration-matched Treasuries) to reduce the
+#: collinearity that raw directional ETF returns would create.
+PROXY_FACTOR_DEFINITIONS: dict[str, tuple[str, str | None]] = {
+    "US Equity": ("VTI", None),
+    "Duration": ("IEF", None),
+    "Credit": ("HYG", "IEF"),
+    "Commodities": ("DBC", None),
+    "Intl Equity": ("VEA", "VTI"),
+}
+
 #: Default multi-asset portfolio: US large cap, US tech, US small cap,
 #: developed international equity, long Treasuries, IG credit, gold.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -150,6 +169,8 @@ class PortfolioConfig:
     frontier_points: int = FRONTIER_POINTS
     sensitivity_shifts: tuple[float, ...] = SENSITIVITY_SHIFTS
     optimization_simulation_paths: int = OPTIMIZATION_SIMULATION_PATHS
+    factor_rolling_window: int = FACTOR_ROLLING_WINDOW
+    covariance_shrinkage_lambda: float = COVARIANCE_SHRINKAGE_LAMBDA
 
     @property
     def tickers(self) -> list[str]:
