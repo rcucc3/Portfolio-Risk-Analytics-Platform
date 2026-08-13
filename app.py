@@ -3,8 +3,8 @@
 Loads the default multi-asset portfolio from ``config.py``, downloads adjusted
 market data, and prints performance, asset-level, correlation, tail-risk,
 risk-decomposition, stress-testing, simulation, optimization and factor
-diagnostics. A Streamlit front end will consume the same functions in a later
-phase.
+diagnostics. The Streamlit product layer in ``streamlit_app.py`` consumes the
+same functions.
 
 The factor section depends on an external factor source; if it is unreachable the
 report prints a note and continues rather than failing.
@@ -12,6 +12,7 @@ report prints a note and continues rather than failing.
 Usage:
     python app.py [--start 2015-01-01] [--end 2025-12-31] [--refresh] [--no-save]
                   [--portfolio-value 1000000]
+    streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
