@@ -60,6 +60,15 @@ STRESS_CORRELATION_TARGET: float = 0.95
 #: Lookback windows (trading days) for worst historical portfolio periods.
 HISTORICAL_EVENT_HORIZONS: tuple[int, ...] = (1, 5, 10)
 
+#: Monte Carlo defaults: paths, horizon in trading days, and the seed that makes
+#: every simulation in the report reproducible.
+MONTE_CARLO_PATHS: int = 10_000
+MONTE_CARLO_HORIZON: int = 252
+MONTE_CARLO_SEED: int = 42
+
+#: Block length (trading days) for the moving-block bootstrap.
+MONTE_CARLO_BLOCK_LENGTH: int = 10
+
 #: Default multi-asset portfolio: US large cap, US tech, US small cap,
 #: developed international equity, long Treasuries, IG credit, gold.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -91,6 +100,10 @@ class PortfolioConfig:
     equity_group: tuple[str, ...] = EQUITY_GROUP
     stress_correlation_target: float = STRESS_CORRELATION_TARGET
     historical_event_horizons: tuple[int, ...] = HISTORICAL_EVENT_HORIZONS
+    monte_carlo_paths: int = MONTE_CARLO_PATHS
+    monte_carlo_horizon: int = MONTE_CARLO_HORIZON
+    monte_carlo_seed: int = MONTE_CARLO_SEED
+    monte_carlo_block_length: int = MONTE_CARLO_BLOCK_LENGTH
 
     @property
     def tickers(self) -> list[str]:

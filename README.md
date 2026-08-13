@@ -8,9 +8,9 @@ drawdowns, cross-asset correlation, and return attribution.
 
 The platform is being built in phases. **This repository currently contains
 Phase 1 (market data engine and core portfolio analytics), Phase 2 (the
-portfolio risk engine) and Phase 3 (stress testing and scenario analysis).**
-Every later phase (simulation, optimization, dashboard) is designed to consume
-the same data and analytics primitives.
+portfolio risk engine), Phase 3 (stress testing and scenario analysis) and
+Phase 4 (Monte Carlo simulation).** Every later phase (optimization, dashboard)
+is designed to consume the same data and analytics primitives.
 
 ---
 
@@ -63,19 +63,35 @@ the same data and analytics primitives.
 - Correlation/covariance stress with volatility preservation and PSD repair.
 - `stress_summary` aggregator for dashboard KPI cards.
 
+## Phase 4 capabilities
+
+**Monte Carlo engine (`src/monte_carlo.py`)**
+- Correlated multivariate Gaussian daily return simulation from a mean vector and covariance.
+- Cross-sectional historical bootstrap that resamples whole trading days.
+- Moving-block bootstrap that retains short-run serial dependence.
+- Transparent two-regime Gaussian mixture for fat-tailed days.
+- Reproducible seeded generation through `numpy.random.Generator`; no global state.
+- Geometric portfolio path compounding with explicit rejection of impossible returns.
+- Ending-value distribution analytics with stable KPI field names.
+- Vectorized maximum-drawdown distribution across all paths.
+- Simulated terminal-horizon VaR and CVaR reusing the Phase 2 empirical estimators.
+- Path-dependent probabilities (ever underwater, severe drawdown, recovery, round trip).
+- Method comparison and baseline-versus-stressed-covariance regime comparison.
+
 **Terminal report (`app.py`)** — portfolio summary, asset-level statistics,
 return contribution, correlation matrix, risk summary, risk contribution, a
 historical-versus-Gaussian tail risk comparison, the stress scenario table, the
 worst scenario in detail with asset attribution, historical stress events,
-reverse stress results and a correlation stress comparison, with the realized
-data range stated explicitly. Results are also written to `outputs/` as CSV.
+reverse stress results, a correlation stress comparison, the Monte Carlo
+simulation summary, a simulation method comparison and a covariance-stress
+simulation, with the realized data range stated explicitly. Results are also
+written to `outputs/` as CSV.
 
 ## Planned capabilities
 
 | Phase | Scope |
 | --- | --- |
-| 4 | Factor exposure analysis (equity/rate/credit/commodity proxies, rolling betas) |
-| 5 | Monte Carlo simulation of terminal wealth and drawdown distributions |
+| 5 | Factor exposure analysis (equity/rate/credit/commodity proxies, rolling betas) |
 | 6 | Portfolio optimization (minimum variance, maximum Sharpe, constrained frontiers) |
 | 7 | Interactive Streamlit dashboard over the same analytics layer |
 
@@ -98,12 +114,14 @@ portfolio-risk-platform/
 │   ├── data_loader.py        # Download -> validate -> align -> daily simple returns
 │   ├── portfolio.py          # Performance analytics (pure functions)
 │   ├── risk.py               # Tail risk, risk decomposition, rolling analytics
-│   └── stress.py             # Scenarios, stress P&L, historical events, reverse stress
+│   ├── stress.py             # Scenarios, stress P&L, historical events, reverse stress
+│   └── monte_carlo.py        # Return simulators, portfolio paths, simulated risk
 └── tests/
     ├── __init__.py
     ├── test_portfolio.py     # Deterministic offline unit tests (Phase 1)
     ├── test_risk.py          # Deterministic offline unit tests (Phase 2)
-    └── test_stress.py        # Deterministic offline unit tests (Phase 3)
+    ├── test_stress.py        # Deterministic offline unit tests (Phase 3)
+    └── test_monte_carlo.py   # Deterministic offline unit tests (Phase 4)
 ```
 
 Design principles: configuration is centralized in `config.py`, the data layer
@@ -125,6 +143,8 @@ config.py  ->  data_loader.download_price_history   (adjusted daily prices)
            ->  stress.historical_stress_events      (worst realized windows)
            ->  stress.reverse_stress_shock          (closed-form required shocks)
            ->  stress.correlation_stress_report     (volatility under lost diversification)
+           ->  monte_carlo.run_simulation           (forward distribution of outcomes)
+           ->  monte_carlo.compare_simulation_methods / stressed_regime_comparison
            ->  app.py (terminal report) and outputs/*.csv
 ```
 
@@ -134,6 +154,9 @@ any aligned return matrix, including simulated or stressed paths in later phases
 `stress.py` sits on top of both, reusing weight and covariance validation,
 `overlapping_horizon_returns` for multi-day windows, and `portfolio_volatility`
 and `diversification_metrics` for the correlation-stress comparison.
+`monte_carlo.py` sits on top of all three: it reuses covariance validation, the
+empirical VaR/CVaR kernels from `risk.py` rather than reimplementing tail logic,
+and `stress.stress_correlations` to build the stressed simulation regime.
 
 ## Methodology
 
@@ -299,6 +322,79 @@ it fires, the achieved correlation is pulled back from the requested target and
 the report flags `PSD Repair Applied`. The output compares baseline and stressed
 portfolio volatility and diversification ratios.
 
+### Simulation methodology (Phase 4)
+
+Phase 4 adds a *forward* view. Phases 2 and 3 describe the realized sample and
+the cost of assumed shocks; Monte Carlo generates many synthetic futures under
+an explicit return model and reads the outcome distribution off them. It is a
+statement about a model, not a prediction.
+
+**Array orientation.** Simulated asset returns are `(paths, days, assets)`,
+portfolio returns `(paths, days)`, and value paths `(paths, days + 1)` with the
+starting value in column 0. Only portfolio-level arrays are retained in a
+`SimulationResult`, so comparing three methods costs megabytes rather than the
+hundreds of megabytes the raw asset cube would occupy.
+
+| Model | Construction | What it preserves |
+| --- | --- | --- |
+| Gaussian | `r_t = mu + L z_t` with `z ~ N(0, I)` and `L L' = Sigma` | Mean vector and full covariance |
+| Cross-sectional bootstrap | Each day copies one historical date's whole return vector | Exact empirical same-day cross-asset dependence, fat tails, skew |
+| Moving-block bootstrap | Contiguous blocks of `k` days are drawn with replacement and concatenated | The above, plus serial dependence within a block |
+| Two-regime mixture | Each day is calm or stressed with fixed probability, each regime Gaussian | A controllable fat tail without a hidden state model |
+
+**Factorization.** The Gaussian model factors the covariance by eigenvalue
+decomposition, `L = V diag(sqrt(lambda))`, rather than Cholesky. Cholesky fails
+on a valid but singular covariance matrix — exactly what perfectly collinear or
+fully hedged holdings produce — whereas the spectral factor handles it. Negative
+eigenvalues smaller in magnitude than `1e-8` times the largest are floating-point
+noise and are clipped to zero; anything more negative is a materially invalid
+input and raises rather than being silently repaired.
+
+**Bootstrap dependence.** Whole rows are always sampled together. Bootstrapping
+each asset independently would preserve every marginal distribution and destroy
+the correlation structure that actually drives portfolio risk, producing a
+diversification benefit that does not exist. The simple bootstrap does **not**
+preserve serial dependence: consecutive simulated days are independent draws, so
+volatility clustering disappears. The moving-block variant restores it inside
+each block and breaks it only at block boundaries.
+
+**Portfolio paths.** Weights are constant, so `r_p,t = sum_i w_i r_i,t` on every
+simulated day, consistent with the daily-rebalancing convention used throughout
+the project. Values compound geometrically, `V_t = V_{t-1} (1 + r_t)`; returns
+are never summed. A simulated return at or below −100% would drive a path to
+zero or negative and raises an error rather than being clipped, because
+quietly flooring it would understate risk.
+
+**Maximum drawdown.** Computed for every path with a vectorized running maximum,
+`min_t (V_t / max_{s<=t} V_s - 1)`. Because the starting value occupies column 0
+the peak is floored at the initial investment, so a decline that begins on day
+one is captured — identical to the Phase 1 convention. Drawdowns are negative
+numbers, and a "95th percentile drawdown" is the severity exceeded by only 5% of
+paths.
+
+**Simulated VaR and CVaR** are measured on the distribution of *terminal*
+returns over the whole horizon, using the same empirical estimators as the
+Phase 2 historical figures, and are labelled with their horizon. A 252-day
+simulated 95% VaR and a one-day historical 95% VaR are entirely different
+quantities and must not be compared directly.
+
+**Stressed regime.** The stressed simulation reuses
+`stress.stress_correlations`, so asset volatilities are preserved exactly and
+only correlations rise. Expected returns are deliberately left unchanged. The
+baseline and stressed runs share a seed and therefore consume the same standard
+normal draws, making the comparison a controlled experiment in which the
+difference is attributable to dependence alone rather than to sampling noise.
+
+**Reproducibility.** Every simulator takes an explicit seed and builds its own
+`numpy.random.Generator`; the global random state is never touched. The same
+seed reproduces results bit for bit, and different seeds produce different
+draws. Both properties are asserted in the test suite.
+
+**Performance.** The default 10,000 paths x 252 days x 7 assets runs in roughly
+0.4 seconds for the Gaussian model and 0.15 seconds for the bootstraps on a
+normal laptop, entirely vectorized with no Python loop over paths. The transient
+asset cube is about 140 MB and is released before the analytics run.
+
 ## Installation
 
 ```bash
@@ -329,6 +425,7 @@ python app.py --start 2018-01-01 --end 2024-12-31   # custom sample period
 python app.py --refresh                             # bypass the cached price panel
 python app.py --no-save                             # skip writing CSVs to outputs/
 python app.py --portfolio-value 5000000             # scale stress results to $5m
+python app.py --mc-paths 50000 --mc-seed 7          # heavier, differently seeded simulation
 ```
 
 The default portfolio and sample period are defined in `config.py`:
@@ -351,7 +448,8 @@ trading-day annualization factor. Stress conventions: a $1,000,000 notional
 portfolio value, an equity group of SPY/QQQ/IWM/EFA for grouped reverse stress
 and correlation stress, a 0.95 stressed-correlation target, and worst-window
 horizons of 1, 5 and 10 trading days. Scenario definitions themselves live in
-`src/stress.py`, not in the global config.
+`src/stress.py`, not in the global config. Simulation conventions: 10,000 paths,
+a 252-trading-day horizon, seed 42 and 10-day bootstrap blocks.
 
 ## Running the tests
 
@@ -364,7 +462,11 @@ pytest -v
 Tests use small synthetic datasets and never call `yfinance`, so the suite is
 deterministic and runs offline. Expected values are derived analytically
 (order-statistic interpolation, closed-form normal quantiles, hand-solved
-covariance algebra) rather than copied from program output.
+covariance algebra) rather than copied from program output. Simulation tests are
+seeded and kept small; where a statistical property is being asserted, such as
+convergence of the simulated covariance to its target, the tolerance is stated
+explicitly and the drawdown engine is additionally checked against a brute-force
+loop implementation.
 
 ## Risk limitations you must read before using the numbers
 
@@ -436,6 +538,38 @@ covariance algebra) rather than copied from program output.
   compounded asset returns as a single shock ignores the compounding cross term;
   the platform reports both figures and their residual rather than presenting the
   approximation as the outcome.
+
+## Simulation limitations you must read before using the numbers
+
+- **Monte Carlo does not predict the future.** It samples from a model you
+  chose. A tidy 10,000-path distribution describes that model's implications, and
+  its apparent precision says nothing about whether the model is right.
+- **Gaussian simulation understates fat tails.** Normal draws cannot produce the
+  clustered, extreme days that equity markets actually deliver, so Gaussian
+  downside figures should be read as a floor rather than a worst case.
+- **The historical bootstrap assumes the sample is representative.** It can never
+  generate a day worse than the worst day observed, so a crisis absent from the
+  sample is absent from every simulated path.
+- **The simple bootstrap destroys serial dependence.** Independent daily draws
+  remove volatility clustering, which flatters drawdown statistics: real losses
+  arrive consecutively, and independent draws rarely stack them.
+- **The block bootstrap only approximates local dependence.** It preserves
+  behaviour within a block and breaks it at every boundary, so the block length
+  is itself a modelling choice that changes the answer.
+- **Results are highly model-dependent.** The method comparison in the report
+  exists precisely to show this: identical settings and seeds still produce
+  materially different tail statistics across return models.
+- **Covariance and expected returns are estimated with error.** Both are computed
+  from a finite historical sample and fed into the simulation as if exact.
+  Expected-return estimates in particular are far noisier than volatility
+  estimates, and the mean drift dominates long-horizon outcomes.
+- **Constant weights and daily rebalancing remain assumptions.** Every path
+  rebalances back to target every day at zero cost, which no real portfolio does.
+- **The stressed covariance regime is a scenario assumption, not a forecast.**
+  Raising correlations toward a target is a deliberate what-if, and nothing in the
+  data says that regime will occur.
+- **A simulated 252-day VaR is not a daily VaR.** Terminal-horizon and one-day
+  measures answer different questions and are never comparable.
 
 ## Assumptions and limitations (data and performance)
 

@@ -19,6 +19,7 @@ import warnings
 import pandas as pd
 
 import config
+from src import monte_carlo as mc
 from src import portfolio as pf
 from src import risk
 from src import stress
@@ -32,6 +33,9 @@ EQUITY_LOSS_TARGET = -0.15
 
 #: Placeholder for a contributor that does not exist in a scenario.
 _NONE_LABEL = "n/a"
+
+#: Terminal-friendly abbreviations for the simulation method names.
+_SHORT_METHOD_LABELS = {"Historical Bootstrap": "Bootstrap", "Block Bootstrap": "Block Boot."}
 
 
 def _section(title: str) -> None:
@@ -75,6 +79,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=config.DEFAULT_PORTFOLIO_VALUE,
         help="Notional value used to express stress results in dollars.",
+    )
+    parser.add_argument(
+        "--mc-paths",
+        type=int,
+        default=config.MONTE_CARLO_PATHS,
+        help="Number of Monte Carlo simulation paths.",
+    )
+    parser.add_argument(
+        "--mc-seed",
+        type=int,
+        default=config.MONTE_CARLO_SEED,
+        help="Random seed making the simulation reproducible.",
     )
     return parser.parse_args(argv)
 
@@ -384,6 +400,124 @@ def print_correlation_stress(report: pd.Series) -> None:
     )
 
 
+def print_monte_carlo(
+    summary: pd.Series,
+    drawdowns: pd.Series,
+    result: mc.SimulationResult,
+    path_metrics: pd.Series,
+) -> None:
+    _section("Monte Carlo simulation")
+    print(
+        f"  {int(summary['Paths']):,} paths x {int(summary['Horizon (Trading Days)'])} "
+        f"trading days, seed {result.seed}, starting value "
+        f"{_money(summary['Starting Portfolio Value'])}\n"
+    )
+    rows = [
+        ("Simulation Method", str(summary["Method"])),
+        ("Mean Ending Value", _money(summary["Mean Ending Value"])),
+        ("Median Ending Value", _money(summary["Median Ending Value"])),
+        ("5th Percentile Ending Value", _money(summary["5th Percentile Ending Value"])),
+        ("95th Percentile Ending Value", _money(summary["95th Percentile Ending Value"])),
+        ("Probability of Loss", _pct(summary["Probability of Loss"], 1)),
+        ("Probability of >10% Loss", _pct(summary["Probability of Loss > 10%"], 1)),
+        (
+            f"Simulated VaR 95% ({result.horizon_label})",
+            _pct(mc.simulated_var(result, config.VAR_CONFIDENCE_95)),
+        ),
+        (
+            f"Simulated CVaR 95% ({result.horizon_label})",
+            _pct(mc.simulated_cvar(result, config.VAR_CONFIDENCE_95)),
+        ),
+        ("Median Maximum Drawdown", _pct(drawdowns["Median Maximum Drawdown"])),
+        (
+            "95th Percentile Maximum Drawdown",
+            _pct(drawdowns["95th Percentile Maximum Drawdown"]),
+        ),
+    ]
+    for label, value in rows:
+        print(f"  {label:<44}{value:>14}")
+
+    print("\n  Path-dependent risk")
+    for label, value in path_metrics.items():
+        print(f"  {str(label):<44}{_pct(value, 1):>14}")
+    print(
+        "\n  VaR and CVaR are terminal-horizon losses over the full simulated period,"
+        "\n  not daily figures. Drawdowns are negative and measured peak to trough."
+    )
+
+
+def _print_transposed(
+    table: pd.DataFrame,
+    rows: list[tuple[str, str]],
+    label_width: int = 34,
+    signed_rows: frozenset[str] = frozenset(),
+) -> None:
+    """Print a comparison with metrics as rows and simulation runs as columns.
+
+    ``signed_rows`` names the table rows that hold differences rather than
+    levels, so they are shown with an explicit sign.
+    """
+    column_width = (LINE_WIDTH - 2 - label_width) // max(len(table.index), 1)
+    header = f"  {'':<{label_width}}" + "".join(
+        f"{str(name)[: column_width - 1]:>{column_width}}" for name in table.index
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for column, kind in rows:
+        cells = ""
+        for name in table.index:
+            value = float(table.loc[name, column])
+            formatted = _money(value) if kind == "money" else _pct(value)
+            if name in signed_rows and value >= 0:
+                formatted = f"+{formatted}"
+            cells += f"{formatted:>{column_width}}"
+        print(f"  {column:<{label_width}}{cells}")
+
+
+def print_method_comparison(table: pd.DataFrame) -> None:
+    _section("Simulation method comparison")
+    _print_transposed(
+        table.rename(index=_SHORT_METHOD_LABELS),
+        [
+            ("Mean Ending Value", "money"),
+            ("Median Ending Value", "money"),
+            ("5th Percentile Ending Value", "money"),
+            ("Probability of Loss", "pct"),
+            ("95% VaR", "pct"),
+            ("95% CVaR", "pct"),
+            ("Median Max Drawdown", "pct"),
+            ("95th Percentile Max Drawdown", "pct"),
+        ],
+    )
+    print(
+        f"\n  Bootstrap resamples whole historical days; Block Boot. resamples"
+        f" {config.MONTE_CARLO_BLOCK_LENGTH}-day blocks."
+        "\n  Identical paths, horizon, starting value and seed, so differences reflect"
+        "\n  the return model alone. The bootstraps resample realized days and inherit"
+        "\n  the sample's fat tails; the Gaussian model does not."
+    )
+
+
+def print_regime_comparison(table: pd.DataFrame) -> None:
+    _section("Covariance stress simulation")
+    _print_transposed(
+        table,
+        [
+            ("Annualized Volatility Assumption", "pct"),
+            ("Probability of Loss", "pct"),
+            ("5th Percentile Ending Value", "money"),
+            ("95% Simulated VaR", "pct"),
+            ("Median Maximum Drawdown", "pct"),
+        ],
+        signed_rows=frozenset({"Change"}),
+    )
+    print(
+        "\n  Both regimes share one seed and one mean vector, so the change is caused"
+        "\n  only by correlations rising toward the stress target. The Change column"
+        "\n  shows stressed minus baseline."
+    )
+
+
 def _library_for(tickers: list[str]) -> list[stress.Scenario]:
     """Adapt the predefined library to the configured universe.
 
@@ -494,6 +628,35 @@ def main(argv: list[str] | None = None) -> int:
         assets=list(cfg.equity_group),
     )
 
+    print(
+        f"\nRunning {args.mc_paths:,} Monte Carlo paths over "
+        f"{cfg.monte_carlo_horizon} trading days..."
+    )
+    simulation_settings = {
+        "n_paths": args.mc_paths,
+        "horizon": cfg.monte_carlo_horizon,
+        "initial_value": args.portfolio_value,
+        "seed": args.mc_seed,
+    }
+    simulation = mc.run_simulation(
+        cfg.weights, market.returns, method=mc.GAUSSIAN, **simulation_settings
+    )
+    simulation_stats = mc.simulation_summary(simulation)
+    simulation_drawdowns = mc.drawdown_distribution(simulation)
+    simulation_paths = mc.path_dependent_metrics(simulation)
+    method_comparison = mc.compare_simulation_methods(
+        cfg.weights,
+        market.returns,
+        block_length=cfg.monte_carlo_block_length,
+        **simulation_settings,
+    )
+    regime_comparison = mc.stressed_regime_comparison(
+        cfg.weights,
+        market.returns,
+        target_correlation=cfg.stress_correlation_target,
+        **simulation_settings,
+    )
+
     print_summary(summary)
     print_asset_statistics(stats, contributions)
     print_return_contribution(contributions, float(summary["Cumulative Return"]))
@@ -509,6 +672,11 @@ def main(argv: list[str] | None = None) -> int:
     print_historical_stress_events(events)
     print_reverse_stress(reverse)
     print_correlation_stress(correlation_stress)
+    print_monte_carlo(
+        simulation_stats, simulation_drawdowns, simulation, simulation_paths
+    )
+    print_method_comparison(method_comparison)
+    print_regime_comparison(regime_comparison)
 
     if not args.no_save:
         _save_outputs(
@@ -531,6 +699,13 @@ def main(argv: list[str] | None = None) -> int:
                 "worst_scenario_contribution": worst_contribution,
                 "historical_stress_events": events,
                 "correlation_stress": correlation_stress,
+                # Summary statistics only; the raw simulated paths are far too
+                # large to export and are not needed downstream.
+                "monte_carlo_summary": pd.concat(
+                    [simulation_stats, simulation_drawdowns, simulation_paths]
+                ),
+                "simulation_method_comparison": method_comparison,
+                "simulation_regime_comparison": regime_comparison,
             }
         )
 

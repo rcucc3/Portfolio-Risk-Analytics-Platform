@@ -52,6 +52,8 @@ from src import portfolio as pf
 
 __all__ = [
     "validate_covariance",
+    "historical_var_from_array",
+    "historical_cvar_from_array",
     "overlapping_horizon_returns",
     "historical_var",
     "historical_cvar",
@@ -185,14 +187,24 @@ def _empirical_quantile(values: np.ndarray, confidence: float) -> float:
     return float(np.quantile(values, 1.0 - confidence, method="linear"))
 
 
-def _historical_var_from_array(values: np.ndarray, confidence: float) -> float:
-    """Historical VaR kernel: negated empirical lower-tail quantile."""
+def historical_var_from_array(values: np.ndarray, confidence: float) -> float:
+    """Historical VaR kernel: negated empirical lower-tail quantile.
+
+    Operates on a bare array so any empirical return sample can reuse it,
+    including simulated terminal-horizon distributions.
+    """
+    confidence = _validate_confidence(confidence)
     _require_tail_capacity(values.size, confidence)
     return -_empirical_quantile(values, confidence)
 
 
-def _historical_cvar_from_array(values: np.ndarray, confidence: float) -> float:
-    """Historical CVaR kernel: negated mean of the observations in the tail."""
+def historical_cvar_from_array(values: np.ndarray, confidence: float) -> float:
+    """Historical CVaR kernel: negated mean of the observations in the tail.
+
+    Operates on a bare array so any empirical return sample can reuse it,
+    including simulated terminal-horizon distributions.
+    """
+    confidence = _validate_confidence(confidence)
     _require_tail_capacity(values.size, confidence)
     threshold = _empirical_quantile(values, confidence)
     tail = values[values <= threshold]
@@ -261,7 +273,7 @@ def historical_var(
     """
     c = _validate_confidence(confidence)
     horizon_returns = overlapping_horizon_returns(returns, horizon)
-    return _historical_var_from_array(horizon_returns.to_numpy(), c)
+    return historical_var_from_array(horizon_returns.to_numpy(), c)
 
 
 def historical_cvar(
@@ -278,7 +290,7 @@ def historical_cvar(
     """
     c = _validate_confidence(confidence)
     horizon_returns = overlapping_horizon_returns(returns, horizon)
-    return _historical_cvar_from_array(horizon_returns.to_numpy(), c)
+    return historical_cvar_from_array(horizon_returns.to_numpy(), c)
 
 
 def _gaussian_moments(
@@ -375,10 +387,10 @@ def tail_risk_table(
             c = _validate_confidence(confidence)
             rows.append(
                 {
-                    "Historical VaR": _historical_var_from_array(
+                    "Historical VaR": historical_var_from_array(
                         horizon_returns.to_numpy(), c
                     ),
-                    "Historical CVaR": _historical_cvar_from_array(
+                    "Historical CVaR": historical_cvar_from_array(
                         horizon_returns.to_numpy(), c
                     ),
                     "Gaussian VaR": gaussian_var(series, c, h),
@@ -656,7 +668,7 @@ def rolling_var(
     w = _validate_window(window, len(series))
     _require_tail_capacity(w, c)
     rolled = series.rolling(w, min_periods=w).apply(
-        lambda values: _historical_var_from_array(values, c), raw=True
+        lambda values: historical_var_from_array(values, c), raw=True
     )
     return rolled.rename(f"Rolling Historical VaR {c:.0%} ({w}D)")
 
@@ -672,7 +684,7 @@ def rolling_cvar(
     w = _validate_window(window, len(series))
     _require_tail_capacity(w, c)
     rolled = series.rolling(w, min_periods=w).apply(
-        lambda values: _historical_cvar_from_array(values, c), raw=True
+        lambda values: historical_cvar_from_array(values, c), raw=True
     )
     return rolled.rename(f"Rolling Historical CVaR {c:.0%} ({w}D)")
 
