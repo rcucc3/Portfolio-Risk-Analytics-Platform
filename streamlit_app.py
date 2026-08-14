@@ -20,7 +20,6 @@ import config
 from src import factors as fx
 from src import monte_carlo as mc
 from src import optimization as opt
-from src import portfolio as pf
 from src import risk
 from src import stress
 from src.data_loader import InsufficientHistoryError, MarketDataError
@@ -50,6 +49,7 @@ from src.ui_support import (
     workbook_bytes,
 )
 from ui import charts
+from ui import style
 
 PAGES = (
     "Overview",
@@ -67,6 +67,25 @@ PLOTLY_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "se
 
 def _chart(fig) -> None:
     st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+
+def _html(markup: str) -> None:
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def _sidebar_html(markup: str) -> None:
+    st.sidebar.markdown(markup, unsafe_allow_html=True)
+
+
+def _kpis(items: list[tuple[str, str, str, str]]) -> None:
+    cols = st.columns(len(items))
+    for col, (label, value, context, tone) in zip(cols, items):
+        with col:
+            _html(style.kpi_card(label, value, context, tone))
+
+
+def _section(title: str, description: str = "") -> None:
+    _html(style.section_header(title, description))
 
 
 def _init_state() -> None:
@@ -131,18 +150,59 @@ def _show_error(exc: BaseException) -> None:
         st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
-def _kpi(column, label: str, value: str) -> None:
-    column.metric(label, value)
+def _kpi(column, label: str, value: str, context: str = "", tone: str = "") -> None:
+    with column:
+        _html(style.kpi_card(label, value, context, tone))
 
 
-def _fmt_table(frame: pd.DataFrame, pct_cols: tuple[str, ...] = (), money_cols: tuple[str, ...] = ()) -> pd.DataFrame:
+def _fmt_table(
+    frame: pd.DataFrame,
+    pct_cols: tuple[str, ...] = (),
+    money_cols: tuple[str, ...] = (),
+    num_cols: tuple[str, ...] = (),
+) -> pd.DataFrame:
     shown = frame.copy()
     for col in shown.columns:
         if col in pct_cols:
             shown[col] = shown[col].map(lambda v: fmt_pct(v) if pd.notna(v) and np_is_number(v) else v)
         elif col in money_cols:
             shown[col] = shown[col].map(lambda v: fmt_money(v, 0) if pd.notna(v) and np_is_number(v) else v)
+        elif col in num_cols:
+            shown[col] = shown[col].map(lambda v: fmt_num(v) if pd.notna(v) and np_is_number(v) else v)
     return shown
+
+
+def _table(
+    frame: pd.DataFrame,
+    *,
+    hide_index: bool = False,
+    height: int | None = None,
+    highlight_neg: tuple[str, ...] = (),
+) -> None:
+    display: pd.DataFrame | pd.io.formats.style.Styler = frame
+    subset = [c for c in highlight_neg if c in frame.columns]
+    if subset:
+        def _neg_color(val: object) -> str:
+            try:
+                if isinstance(val, str):
+                    raw = (
+                        val.replace("%", "")
+                        .replace(",", "")
+                        .replace("$", "")
+                        .replace("−", "-")
+                        .replace("—", "")
+                    )
+                    if raw in {"", "-"}:
+                        return ""
+                    num = float(raw)
+                else:
+                    num = float(val)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return ""
+            return "color: #9B4A45" if num < 0 else ""
+
+        display = frame.style.map(_neg_color, subset=subset)
+    st.dataframe(display, width="stretch", hide_index=hide_index, height=height)
 
 
 def np_is_number(value: object) -> bool:
@@ -242,6 +302,8 @@ def _run_analysis(settings: dict[str, Any], holdings: pd.DataFrame) -> None:
         }
         if st.session_state.get("opt_fp") != fingerprint:
             st.session_state.opt = None
+            st.session_state.opt_sens = None
+            st.session_state.opt_cov = None
         if st.session_state.get("mc_fp") != fingerprint:
             st.session_state.mc = None
             st.session_state.mc_compare = None
@@ -253,7 +315,10 @@ def _run_analysis(settings: dict[str, Any], holdings: pd.DataFrame) -> None:
 
 
 def _sidebar() -> tuple[str, dict[str, Any], pd.DataFrame, bool]:
-    st.sidebar.markdown("### Portfolio")
+    _sidebar_html(style.sidebar_label("Navigate", first=True))
+    page = st.sidebar.radio("Pages", PAGES, index=0, label_visibility="collapsed")
+
+    _sidebar_html(style.sidebar_label("Portfolio"))
     method = st.sidebar.radio(
         "Input method",
         ("Default demo", "Manual entry", "CSV upload"),
@@ -340,25 +405,26 @@ def _sidebar() -> tuple[str, dict[str, Any], pd.DataFrame, bool]:
         step=10_000.0,
         format="%.0f",
     )
-    value_overridden = st.sidebar.checkbox(
-        "Override portfolio value (use this notional instead of the sum of dollar positions)",
-        value=False,
-    )
     start = st.sidebar.date_input("Start date", value=pd.Timestamp(config.DEFAULT_START_DATE).date())
-    use_end = st.sidebar.checkbox("Set an end date", value=False)
-    end = None
-    if use_end:
-        end = st.sidebar.date_input("End date", value=pd.Timestamp.today().date())
     benchmark = st.sidebar.text_input("Benchmark", value="SPY").strip().upper() or "SPY"
-    normalize = st.sidebar.checkbox("Normalize weights to 100%", value=False)
     analyze = st.sidebar.button("Analyze Portfolio", type="primary", width="stretch")
 
-    st.sidebar.markdown("### Analysis settings")
+    _sidebar_html(style.sidebar_label("Analysis"))
     rf_pct = st.sidebar.number_input("Risk-free rate (%)", min_value=0.0, max_value=20.0, value=2.0, step=0.25)
     var_conf = st.sidebar.selectbox("Primary VaR confidence", (0.95, 0.99), index=0, format_func=lambda x: f"{x:.0%}")
     rolling = st.sidebar.number_input("Rolling window (days)", min_value=21, max_value=756, value=int(config.ROLLING_WINDOW), step=21)
 
-    with st.sidebar.expander("Advanced settings"):
+    _sidebar_html(style.sidebar_label("Advanced"))
+    with st.sidebar.expander("Dates, constraints, simulation", expanded=False):
+        value_overridden = st.checkbox(
+            "Override portfolio value (ignore sum of dollar positions)",
+            value=False,
+        )
+        use_end = st.checkbox("Set an end date", value=False)
+        end = None
+        if use_end:
+            end = st.date_input("End date", value=pd.Timestamp.today().date())
+        normalize = st.checkbox("Normalize weights to 100%", value=False)
         mc_paths = st.number_input("Monte Carlo paths", min_value=200, max_value=20_000, value=int(config.MONTE_CARLO_PATHS), step=200)
         mc_horizon = st.number_input("Monte Carlo horizon (days)", min_value=5, max_value=756, value=int(config.MONTE_CARLO_HORIZON), step=5)
         mc_method = st.selectbox(
@@ -376,8 +442,6 @@ def _sidebar() -> tuple[str, dict[str, Any], pd.DataFrame, bool]:
             value=False,
             help="Off by default. Unknown names are never silently shocked by zero.",
         )
-
-    page = st.sidebar.radio("Pages", PAGES, index=0)
 
     settings = {
         "position_mode": position_mode,
@@ -403,7 +467,6 @@ def _sidebar() -> tuple[str, dict[str, Any], pd.DataFrame, bool]:
     }
     return page, settings, holdings, analyze
 
-
 def _downloads(bundle: dict[str, Any]) -> None:
     extras: dict[str, pd.DataFrame] = {}
     if bundle.get("stress_table") is not None and not bundle["stress_table"].empty:
@@ -415,173 +478,195 @@ def _downloads(bundle: dict[str, Any]) -> None:
     if st.session_state.factors is not None and st.session_state.factors.get("academic"):
         extras["factor_exposures"] = st.session_state.factors["academic"]["exposures"].to_frame("Exposure")
     tables = export_tables(bundle["core"], extras)
-    st.sidebar.markdown("### Downloads")
-    for name, frame in tables.items():
-        st.sidebar.download_button(
-            f"{name}.csv",
-            frame.to_csv().encode("utf-8"),
-            file_name=f"{name}.csv",
-            mime="text/csv",
-            key=f"dl_{name}",
+    _sidebar_html(style.sidebar_label("Downloads"))
+    with st.sidebar.expander("Export tables", expanded=False):
+        for name, frame in tables.items():
+            st.download_button(
+                f"{name}.csv",
+                frame.to_csv().encode("utf-8"),
+                file_name=f"{name}.csv",
+                mime="text/csv",
+                key=f"dl_{name}",
+            )
+        st.download_button(
+            "results_workbook.xlsx",
+            workbook_bytes(tables),
+            file_name="portfolio_risk_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_xlsx",
         )
-    st.sidebar.download_button(
-        "results_workbook.xlsx",
-        workbook_bytes(tables),
-        file_name="portfolio_risk_results.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_xlsx",
+
+
+def _header(bundle: dict[str, Any] | None = None, page: str | None = None) -> None:
+    if bundle is None:
+        _html(style.product_header(mode=page or "Ready"))
+        return
+    parsed = bundle["parsed"]
+    market = bundle["market"]
+    _html(
+        style.product_header(
+            portfolio_value=fmt_money(parsed.portfolio_value),
+            n_assets=len(parsed.tickers),
+            data_through=fmt_date(market.end_date),
+            benchmark=bundle.get("benchmark_name"),
+            mode=page or "Live analysis",
+        )
     )
-
-
-def _header() -> None:
-    st.title("Portfolio Risk & Analytics Platform")
-    st.caption("Performance • Risk • Stress Testing • Simulation • Optimization • Factors")
 
 
 def page_overview(bundle: dict[str, Any]) -> None:
     core = bundle["core"]
     parsed = bundle["parsed"]
-    market = bundle["market"]
     summary = core["summary"]
     kpis = core["risk_summary"]
-    st.subheader("Overview")
-    st.caption(
-        f"{', '.join(parsed.tickers)}  ·  "
-        f"{fmt_date(market.start_date)} to {fmt_date(market.end_date)}  ·  "
-        f"{int(summary['Number of Observations']):,} daily returns"
-    )
     for note in bundle["notes"]:
-        st.warning(note)
+        _html(style.callout(note, "warn"))
 
-    r1 = st.columns(4)
-    _kpi(r1[0], "Portfolio value", fmt_money(parsed.portfolio_value))
-    _kpi(r1[1], "Annualized return", fmt_pct(summary["Annualized Return"]))
-    _kpi(r1[2], "Annualized volatility", fmt_pct(summary["Annualized Volatility"]))
-    _kpi(r1[3], "Sharpe ratio", fmt_num(summary["Sharpe Ratio"]))
-    r2 = st.columns(4)
-    _kpi(r2[0], "Maximum drawdown", fmt_pct(summary["Maximum Drawdown"]))
-    _kpi(r2[1], "95% historical VaR", fmt_pct(kpis["1-Day Historical VaR 95%"]))
-    _kpi(r2[2], "95% historical CVaR", fmt_pct(kpis["1-Day Historical CVaR 95%"]))
-    _kpi(r2[3], "Diversification ratio", fmt_num(kpis["Diversification Ratio"]))
+    _kpis(
+        [
+            ("Portfolio value", fmt_money(parsed.portfolio_value), f"{len(parsed.tickers)} holdings", ""),
+            ("Annualized return", fmt_pct(summary["Annualized Return"]), f"since {fmt_date(summary['Start Date'])}", "pos" if summary["Annualized Return"] >= 0 else "neg"),
+            ("Volatility", fmt_pct(summary["Annualized Volatility"]), "annualized", ""),
+            ("Sharpe ratio", fmt_num(summary["Sharpe Ratio"]), "vs configured risk-free rate", "pos" if summary["Sharpe Ratio"] >= 0 else "neg"),
+            ("Max drawdown", fmt_pct(summary["Maximum Drawdown"]), "historical peak-to-trough", "neg"),
+            ("95% historical VaR", fmt_pct(kpis["1-Day Historical VaR 95%"]), "1-day loss magnitude", "neg"),
+        ]
+    )
 
-    c1, c2 = st.columns((1.6, 1))
+    _section("Cumulative performance", "Portfolio growth of $1 versus the selected benchmark.")
+    c1, c2 = st.columns((2.05, 1), gap="large")
     with c1:
         _chart(
             charts.growth_chart(
                 core["growth"],
                 core["benchmark_growth"],
                 bundle["benchmark_name"],
-                "Cumulative portfolio growth",
+                "",
             )
         )
     with c2:
         _chart(charts.allocation_pie(parsed.weights))
 
-    c3, c4 = st.columns(2)
-    with c3:
-        _chart(charts.risk_contribution_bar(core["risk_contribution"]))
-    with c4:
-        st.markdown("**Key observations**")
-        st.caption("Derived from the calculated metrics — not generated language.")
-        for line in core["insights"]:
-            st.write(f"- {line}")
-        leader = kpis["Largest Risk Contributor"]
-        st.write(
-            f"- Biggest concern on this sample: **{leader}** contributes "
-            f"{fmt_pct(kpis['Largest Risk Contribution %'])} of volatility."
+    _section("Capital vs risk", "Where capital is allocated versus where volatility actually comes from.")
+    left, right = st.columns((1.35, 1), gap="large")
+    with left:
+        _chart(charts.capital_vs_risk_dumbbell(core["risk_contribution"]))
+    with right:
+        w = parsed.weights
+        contrib = core["risk_contribution"]["Risk Contribution %"]
+        gap = (contrib - w).abs()
+        mismatch = gap.idxmax() if float(gap.max()) > 0.05 else None
+        dd = core["drawdown_window"]
+        recovery = (
+            f", recovered by {fmt_date(dd.recovery_date)}"
+            if dd.recovery_date is not None
+            else ", unrecovered in-sample"
         )
+        cards = style.insight_cards_from_metrics(
+            leader=str(kpis["Largest Risk Contributor"]),
+            leader_risk=float(kpis["Largest Risk Contribution %"]),
+            leader_weight=float(w.loc[kpis["Largest Risk Contributor"]]),
+            mismatch_name=None if mismatch is None else str(mismatch),
+            mismatch_weight=None if mismatch is None else float(w.loc[mismatch]),
+            mismatch_risk=None if mismatch is None else float(contrib.loc[mismatch]),
+            drawdown_text=(
+                f"Maximum drawdown of {fmt_pct(dd.depth)} ran from "
+                f"{fmt_date(dd.peak_date)} to {fmt_date(dd.trough_date)}{recovery}."
+            ),
+            hist_cvar_99=float(kpis["1-Day Historical CVaR 99%"]),
+            gauss_cvar_99=float(risk.gaussian_cvar(core["portfolio_returns"], 0.99, 1)),
+        )
+        for label, body in cards:
+            _html(style.insight_card(label, body))
+
+    _section("Drawdown timeline", "Peak-to-trough path of the maximum drawdown, with recovery when it occurs in-sample.")
+    _chart(charts.drawdown_timeline(core["drawdowns"], core["drawdown_window"]))
 
 
 def page_performance(bundle: dict[str, Any]) -> None:
     core = bundle["core"]
-    st.subheader("Performance")
+    _section("Growth", "Cumulative growth of $1 versus the selected benchmark.")
+    _chart(charts.growth_chart(core["growth"], core["benchmark_growth"], bundle["benchmark_name"], ""))
+    _section("Risk map", "Asset return versus volatility; bubble size is portfolio weight.")
     _chart(
-        charts.growth_chart(
-            core["growth"], core["benchmark_growth"], bundle["benchmark_name"]
+        charts.risk_map_scatter(
+            core["asset_statistics"],
+            bundle["parsed"].weights,
+            portfolio_vol=float(core["summary"]["Annualized Volatility"]),
+            portfolio_return=float(core["summary"]["Annualized Return"]),
         )
     )
-    _chart(charts.drawdown_chart(core["drawdowns"]))
     rolling = core["rolling"]
     if core.get("rolling_note"):
-        st.info(core["rolling_note"])
+        _html(style.callout(str(core["rolling_note"]), "warn"))
     elif not rolling.empty:
-        c1, c2 = st.columns(2)
+        _section("Rolling analytics", "Trailing window estimates; the first incomplete window is omitted.")
+        c1, c2 = st.columns(2, gap="large")
         with c1:
             if "Rolling Annualized Return" in rolling.columns:
                 _chart(charts.rolling_metric_chart(rolling["Rolling Annualized Return"], "Rolling annualized return"))
             _chart(charts.rolling_metric_chart(rolling["Rolling Annualized Volatility"], "Rolling annualized volatility"))
         with c2:
             _chart(charts.rolling_metric_chart(rolling["Rolling Sharpe Ratio"], "Rolling Sharpe ratio", y_pct=False))
-    c3, c4 = st.columns(2)
+            _chart(charts.drawdown_timeline(core["drawdowns"], core["drawdown_window"]))
+    _section("Correlation and contribution", "Pairwise daily correlations and each asset’s share of cumulative return.")
+    c3, c4 = st.columns(2, gap="large")
     with c3:
-        _chart(charts.return_vol_scatter(core["asset_statistics"]))
-    with c4:
         _chart(charts.correlation_heatmap(core["correlation"]))
-    _chart(
-        charts.contribution_bar(
-            core["return_contribution"], "Contribution to Return", "Cumulative return contribution"
+    with c4:
+        _chart(
+            charts.contribution_bar(
+                core["return_contribution"], "Contribution to Return", "Cumulative return contribution"
+            )
         )
-    )
-    a1, a2 = st.columns(2)
+    a1, a2 = st.columns(2, gap="large")
     with a1:
-        st.markdown("**Annual returns**")
+        _section("Annual returns")
         annual = core["annual_returns"].to_frame("Return")
         annual.index = annual.index.map(lambda d: str(pd.Timestamp(d).year))
-        st.dataframe(_fmt_table(annual, pct_cols=("Return",)), width="stretch")
+        _table(_fmt_table(annual, pct_cols=("Return",)))
     with a2:
-        st.markdown("**Asset statistics**")
-        stats = core["asset_statistics"]
-        st.dataframe(
+        _section("Asset statistics")
+        _table(
             _fmt_table(
-                stats,
+                core["asset_statistics"],
                 pct_cols=("Annualized Return", "Annualized Volatility", "Maximum Drawdown"),
-            ),
-            width="stretch",
+                num_cols=("Sharpe Ratio",),
+            )
         )
 
 
 def page_risk(bundle: dict[str, Any]) -> None:
     core = bundle["core"]
     kpis = core["risk_summary"]
-    st.subheader("Risk")
-    st.caption(
-        "VaR and CVaR on this page are **daily** tail measures unless a horizon is named. "
-        "Simulated multi-day risk lives on the Monte Carlo page."
+    _html(
+        style.callout(
+            "VaR and CVaR on this page are daily tail measures unless a horizon is named. "
+            "Simulated multi-day risk lives on the Monte Carlo page.",
+            "note",
+        )
     )
-    r1 = st.columns(4)
-    _kpi(r1[0], "Hist. VaR 95%", fmt_pct(kpis["1-Day Historical VaR 95%"]))
-    _kpi(r1[1], "Hist. CVaR 95%", fmt_pct(kpis["1-Day Historical CVaR 95%"]))
-    _kpi(r1[2], "Hist. VaR 99%", fmt_pct(kpis["1-Day Historical VaR 99%"]))
-    _kpi(r1[3], "Hist. CVaR 99%", fmt_pct(kpis["1-Day Historical CVaR 99%"]))
-    r2 = st.columns(4)
-    _kpi(r2[0], "Gaussian VaR 95%", fmt_pct(kpis["1-Day Gaussian VaR 95%"]))
-    _kpi(r2[1], "Gaussian CVaR 95%", fmt_pct(kpis["1-Day Gaussian CVaR 95%"]))
-    _kpi(r2[2], "Annualized volatility", fmt_pct(kpis["Portfolio Annualized Volatility"]))
-    _kpi(r2[3], "Diversification ratio", fmt_num(kpis["Diversification Ratio"]))
-
-    table = core["risk_contribution"]
-    st.dataframe(
-        _fmt_table(
-            table,
-            pct_cols=(
-                "Weight",
-                "Annualized Standalone Volatility",
-                "Risk Contribution %",
-            ),
-        ),
-        width="stretch",
-    )
-    _chart(charts.capital_vs_risk_bar(table))
-    rolling = core["rolling"]
-    if not rolling.empty:
-        var_col = [c for c in rolling.columns if "VaR" in c][0]
-        cvar_col = [c for c in rolling.columns if "CVaR" in c][0]
-        c1, c2 = st.columns(2)
-        with c1:
-            _chart(charts.rolling_metric_chart(rolling[var_col], var_col))
-        with c2:
-            _chart(charts.rolling_metric_chart(rolling[cvar_col], cvar_col))
     port = core["portfolio_returns"]
+    g99_cvar = risk.gaussian_cvar(port, 0.99, 1)
+    _kpis(
+        [
+            ("Hist. VaR 95%", fmt_pct(kpis["1-Day Historical VaR 95%"]), "1-day", "neg"),
+            ("Hist. CVaR 95%", fmt_pct(kpis["1-Day Historical CVaR 95%"]), "1-day expected shortfall", "neg"),
+            ("Volatility", fmt_pct(kpis["Portfolio Annualized Volatility"]), "annualized", ""),
+            ("Diversification ratio", fmt_num(kpis["Diversification Ratio"]), "1.0 = no diversification", ""),
+        ]
+    )
+    _kpis(
+        [
+            ("Hist. VaR 99%", fmt_pct(kpis["1-Day Historical VaR 99%"]), "1-day", "neg"),
+            ("Hist. CVaR 99%", fmt_pct(kpis["1-Day Historical CVaR 99%"]), "1-day expected shortfall", "neg"),
+            ("Gaussian VaR 95%", fmt_pct(kpis["1-Day Gaussian VaR 95%"]), "parametric", ""),
+            ("Gaussian CVaR 95%", fmt_pct(kpis["1-Day Gaussian CVaR 95%"]), "parametric", ""),
+        ]
+    )
+    _section("Capital vs risk", "Assets that sit far from the diagonal concentrate risk relative to capital.")
+    _chart(charts.capital_vs_risk_dumbbell(core["risk_contribution"]))
+    _section("Historical vs Gaussian tails", "A gap at 99% is typical for equity-heavy books with fat left tails.")
     _chart(
         charts.hist_vs_gaussian_bar(
             {
@@ -594,31 +679,52 @@ def page_risk(bundle: dict[str, Any]) -> None:
                 "VaR 95%": kpis["1-Day Gaussian VaR 95%"],
                 "CVaR 95%": kpis["1-Day Gaussian CVaR 95%"],
                 "VaR 99%": risk.gaussian_var(port, 0.99, 1),
-                "CVaR 99%": risk.gaussian_cvar(port, 0.99, 1),
+                "CVaR 99%": g99_cvar,
             },
         )
     )
+    rolling = core["rolling"]
+    if not rolling.empty:
+        var_col = [c for c in rolling.columns if "VaR" in c][0]
+        cvar_col = [c for c in rolling.columns if "CVaR" in c][0]
+        _section("Rolling risk", "Trailing historical VaR and CVaR on the configured window.")
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            _chart(charts.rolling_metric_chart(rolling[var_col], var_col))
+        with c2:
+            _chart(charts.rolling_metric_chart(rolling[cvar_col], cvar_col))
+    _section("Return distribution", "Daily portfolio returns with historical VaR thresholds.")
     _chart(
         charts.distribution_chart(
             core["portfolio_returns"],
             kpis["1-Day Historical VaR 95%"],
             kpis["1-Day Historical VaR 99%"],
+            "",
         )
     )
+    _section("Risk contribution", "Euler decomposition of annualized portfolio volatility.")
+    _table(
+        _fmt_table(
+            core["risk_contribution"],
+            pct_cols=("Weight", "Annualized Standalone Volatility", "Risk Contribution %"),
+        ),
+        highlight_neg=("Risk Contribution %",),
+    )
     if not core["tail_risk"].empty:
-        st.markdown("**Multi-day empirical tail risk**")
-        st.caption("Overlapping compounded windows — not square-root-of-time scaling.")
-        st.dataframe(core["tail_risk"], width="stretch")
+        _section("Multi-day empirical tail risk", "Overlapping compounded windows — not square-root-of-time scaling.")
+        _table(core["tail_risk"])
 
 
 def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
     market = bundle["market"]
-    st.subheader("Stress tests")
-    st.caption(
-        "Library scenarios are defined on the demo ETF universe. Unknown tickers are mapped "
-        "by library match, then factor-implied shocks (if a factor model has been run), "
-        "then market beta to SPY. Unmapped names are never silently shocked by zero."
+    _html(
+        style.callout(
+            "Library scenarios are defined on the demo ETF universe. Unknown tickers are mapped "
+            "by library match, then factor-implied shocks if a factor model has been run, then "
+            "market beta to SPY. Unmapped names are never silently shocked by zero.",
+            "note",
+        )
     )
 
     factor_model = None
@@ -639,49 +745,56 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     unmapped_any = [item for item in adapted if item.unmapped]
     if unmapped_any and not settings["fill_unmapped"]:
         names = sorted({a for item in unmapped_any for a in item.unmapped})
-        st.warning(
-            "Unmapped asset(s): "
-            + ", ".join(names)
-            + ". Enter a manual shock below or enable “Treat unmapped scenario shocks as 0%” "
-            "under Advanced settings. Those names are excluded from the library results until then."
+        _html(
+            style.callout(
+                "Unmapped asset(s): "
+                + ", ".join(names)
+                + ". Enter a manual shock below or enable “Treat unmapped scenario shocks as 0%” "
+                "under Advanced settings.",
+                "warn",
+            )
         )
 
     if mapped:
         table = run_adapted_stress(mapped, parsed.weights, parsed.portfolio_value)
-        st.dataframe(
-            _fmt_table(table, pct_cols=("Portfolio Stress Return",), money_cols=("Dollar P&L", "Stressed Portfolio Value")),
-            width="stretch",
-        )
-        _chart(charts.scenario_loss_bar(table))
-        selected = st.selectbox("Inspect scenario", list(table.index))
+        _section("Scenario selector", "Estimated portfolio impact under predefined shocks.")
+        selected = st.selectbox("Scenario", list(table.index))
         chosen = next(item for item in mapped if item.name == selected)
-        st.write(chosen.description)
-        st.caption("Shock source per asset")
-        st.dataframe(
-            _fmt_table(mapping_table(chosen), pct_cols=("Shock",)),
-            width="stretch",
+        row = table.loc[selected]
+        hedge = row["Largest Hedge / Offset"]
+        _kpis(
+            [
+                ("Dollar P&L", fmt_money(row["Dollar P&L"]), selected, "neg" if row["Dollar P&L"] < 0 else "pos"),
+                ("Stressed value", fmt_money(row["Stressed Portfolio Value"]), fmt_pct(row["Portfolio Stress Return"]), ""),
+                ("Largest loss", str(row["Largest Loss Contributor"]) if pd.notna(row["Largest Loss Contributor"]) else "—", "contributor", "neg"),
+                ("Largest hedge", str(hedge) if pd.notna(hedge) else "—", "offset", "pos" if pd.notna(hedge) else ""),
+            ]
         )
+        _html(style.callout(chosen.description, "note"))
         pnl = stress.stress_pnl_table(parsed.weights, chosen.scenario, parsed.portfolio_value, missing="error")
-        st.dataframe(
+        _section("Scenario waterfall", "How each holding adds to or offsets total P&L.")
+        _chart(charts.scenario_waterfall(pnl, ""))
+        _section("Scenario comparison", "Library outcomes ranked from worst to best.")
+        _chart(charts.scenario_loss_bar(table))
+        _section("Asset contribution")
+        _table(
             _fmt_table(
                 pnl,
                 pct_cols=("Weight", "Scenario Shock", "Contribution to Portfolio P&L %", "Contribution to Total Loss %"),
                 money_cols=("Starting Allocation", "Stress P&L"),
             ),
-            width="stretch",
+            highlight_neg=("Stress P&L", "Contribution to Portfolio P&L %"),
         )
+        with st.expander("Shock mapping sources"):
+            _table(_fmt_table(mapping_table(chosen), pct_cols=("Shock",)))
     else:
-        st.info("No library scenario is fully mapped to this portfolio yet.")
+        _html(style.empty_state("No library scenario is fully mapped to this portfolio yet."))
 
-    st.markdown("#### Custom per-asset shocks")
-    custom_df = pd.DataFrame(
-        {"Ticker": parsed.tickers, "Shock %": [0.0] * len(parsed.tickers)}
-    )
+    _section("Custom shocks", "User-specified per-asset returns, priced by the existing stress engine.")
+    custom_df = pd.DataFrame({"Ticker": parsed.tickers, "Shock %": [0.0] * len(parsed.tickers)})
     edited = st.data_editor(custom_df, hide_index=True, width="stretch", key="custom_shocks")
     if st.button("Run custom stress"):
-        shocks = {
-            str(row["Ticker"]): float(row["Shock %"]) / 100.0 for _, row in edited.iterrows()
-        }
+        shocks = {str(row["Ticker"]): float(row["Shock %"]) / 100.0 for _, row in edited.iterrows()}
         scenario = custom_scenario_from_shocks(shocks)
         st.session_state.custom_stress = stress.stress_scenario(
             parsed.weights, scenario, parsed.portfolio_value, missing="error"
@@ -691,37 +804,45 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
         )
     if st.session_state.get("custom_stress") is not None:
         result = st.session_state.custom_stress
-        st.write(
-            f"**{result['Scenario']}**  ·  return {fmt_pct(result['Portfolio Stress Return'])}  ·  "
-            f"P&L {fmt_money(result['Portfolio P&L'])}  ·  stressed value {fmt_money(result['Stressed Portfolio Value'])}"
+        _kpis(
+            [
+                ("Custom return", fmt_pct(result["Portfolio Stress Return"]), result["Scenario"], ""),
+                ("P&L", fmt_money(result["Portfolio P&L"]), "", "neg" if result["Portfolio P&L"] < 0 else "pos"),
+                ("Stressed value", fmt_money(result["Stressed Portfolio Value"]), "", ""),
+            ]
         )
-        st.dataframe(st.session_state.custom_pnl, width="stretch")
+        _chart(charts.scenario_waterfall(st.session_state.custom_pnl, ""))
+        _table(
+            st.session_state.custom_pnl,
+            highlight_neg=("Stress P&L", "Contribution to Portfolio P&L %"),
+        )
 
-    st.markdown("#### Historical worst windows")
+    _section("Historical worst windows", "Realized compounded losses on this portfolio — not hypothetical shocks.")
     events = bundle["core"]["historical_events"]
-    st.dataframe(
-        _fmt_table(events, pct_cols=("Portfolio Return", "Weighted Asset Return", "Worst Asset Return")),
-        width="stretch",
+    _table(
+        _fmt_table(events, pct_cols=("Portfolio Return", "Weighted Asset Return", "Worst Asset Return"))
     )
     horizon = st.selectbox("Show asset contribution for", list(events.index))
     days = int(str(horizon).split("-")[0])
     event = stress.worst_historical_event(market.returns, parsed.weights, days)
     st.caption(f"{fmt_date(event.start_date)} to {fmt_date(event.end_date)}")
-    st.dataframe(
-        stress.stress_pnl_table(event.weights, event.as_scenario(), parsed.portfolio_value),
-        width="stretch",
-    )
+    hist_pnl = stress.stress_pnl_table(event.weights, event.as_scenario(), parsed.portfolio_value)
+    _chart(charts.scenario_waterfall(hist_pnl, f"{horizon} event contribution"))
+    _table(hist_pnl, highlight_neg=("Stress P&L", "Contribution to Portfolio P&L %"))
 
-    st.markdown("#### Reverse stress")
+    _section("Reverse stress", "Uniform shock required on the selected names to reach a target portfolio loss.")
     target_pct = st.number_input("Target portfolio loss (%)", value=-10.0, step=1.0)
     shocked = st.multiselect("Assets allowed to move", parsed.tickers, default=list(parsed.tickers[:1]))
     if st.button("Solve reverse stress") and shocked:
         try:
             result = stress.reverse_stress_shock(parsed.weights, shocked, float(target_pct) / 100.0)
-            st.dataframe(result.to_frame("Value"), width="stretch")
+            _table(result.to_frame("Value"))
             if not bool(result.get("Feasible", True)):
-                st.error(
-                    "The required shock is below -100% and is infeasible for a long unlevered position."
+                _html(
+                    style.callout(
+                        "The required shock is below -100% and is infeasible for a long unlevered position.",
+                        "warn",
+                    )
                 )
         except ValueError as exc:
             st.error(str(exc))
@@ -730,18 +851,20 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 def page_monte_carlo(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
     market = bundle["market"]
-    st.subheader("Monte Carlo")
-    st.caption(
-        "These figures are **horizon-level** simulated outcomes, not daily VaR. "
-        "Paths are generated only when you click Run — changing unrelated widgets will not rerun 10,000 paths."
+    _html(
+        style.callout(
+            "These figures are horizon-level simulated outcomes, not daily VaR. "
+            "Paths are generated only when you click Run.",
+            "note",
+        )
     )
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         run = st.button("Run Monte Carlo", type="primary")
     with c2:
         compare = st.button("Compare methods")
     with c3:
-        st.write(f"{settings['mc_paths']:,} paths · {settings['mc_horizon']} days · {settings['mc_method']}")
+        st.caption(f"{settings['mc_paths']:,} paths · {settings['mc_horizon']} days · {settings['mc_method']}")
 
     if run:
         with st.spinner("Simulating paths…"):
@@ -775,25 +898,15 @@ def page_monte_carlo(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.mc
     if payload is None:
-        st.info("Click **Run Monte Carlo** to generate the selected method.")
+        _html(style.empty_state("Run Monte Carlo to generate simulated outcome distributions."))
         return
 
     result = payload["result"]
     summary = payload["summary"]
     dd = payload["drawdowns"]
-    r1 = st.columns(4)
-    _kpi(r1[0], "Median ending value", fmt_money(summary["Median Ending Value"]))
-    _kpi(r1[1], "5th percentile", fmt_money(summary["5th Percentile Ending Value"]))
-    _kpi(r1[2], "95th percentile", fmt_money(summary["95th Percentile Ending Value"]))
-    _kpi(r1[3], "Probability of loss", fmt_pct(summary["Probability of Loss"]))
-    r2 = st.columns(4)
-    _kpi(r2[0], "Prob. of >10% loss", fmt_pct(summary["Probability of Loss > 10%"]))
-    _kpi(r2[1], "95% simulated VaR", fmt_pct(payload["var"]))
-    _kpi(r2[2], "95% simulated CVaR", fmt_pct(payload["cvar"]))
-    _kpi(r2[3], "Median max drawdown", fmt_pct(dd["Median Maximum Drawdown"]))
-
-    paths = sample_paths(result.values, n_paths=80, seed=settings["mc_seed"])
-    _chart(charts.simulated_paths_chart(paths, result.initial_value))
+    _section("Fan chart", "Percentile bands of simulated portfolio value over the horizon.")
+    _chart(charts.monte_carlo_fan(result.values, result.initial_value))
+    _section("Ending-value distribution")
     _chart(
         charts.ending_value_hist(
             result.terminal_values,
@@ -803,11 +916,22 @@ def page_monte_carlo(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             float(summary["95th Percentile Ending Value"]),
         )
     )
-    _chart(charts.drawdown_hist(result.max_drawdowns))
+    _kpis(
+        [
+            ("Median end value", fmt_money(summary["Median Ending Value"]), settings["mc_method"], ""),
+            ("5th percentile", fmt_money(summary["5th Percentile Ending Value"]), "left tail", "neg"),
+            ("Probability of loss", fmt_pct(summary["Probability of Loss"]), "below starting value", "neg"),
+            ("95% simulated VaR", fmt_pct(payload["var"]), "horizon loss", "neg"),
+            ("Median max drawdown", fmt_pct(dd["Median Maximum Drawdown"]), "across paths", "neg"),
+        ]
+    )
+    with st.expander("Sample paths (subset of simulated trajectories)"):
+        paths = sample_paths(result.values, n_paths=80, seed=settings["mc_seed"])
+        _chart(charts.simulated_paths_chart(paths, result.initial_value))
+        _chart(charts.drawdown_hist(result.max_drawdowns))
     if st.session_state.mc_compare is not None:
-        st.markdown("**Model comparison**")
-        st.caption("Same path count, horizon and seed; only the return model changes.")
-        st.dataframe(st.session_state.mc_compare, width="stretch")
+        _section("Model comparison", "Same path count, horizon and seed; only the return model changes.")
+        _table(st.session_state.mc_compare)
 
 
 def _run_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -851,14 +975,16 @@ def _run_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
 def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
-    st.subheader("Optimization")
-    st.caption(
-        "Mean-variance results are extremely sensitive to expected-return assumptions. "
-        "Use the sensitivity table before treating an allocation as a recommendation."
+    _html(
+        style.callout(
+            "Mean-variance results are extremely sensitive to expected-return assumptions. "
+            "Use the sensitivity table before treating an allocation as a recommendation.",
+            "note",
+        )
     )
     n = len(parsed.tickers)
     with st.expander("Allocation constraints", expanded=False):
-        st.caption("Leave these at the defaults unless you need name-level floors or caps. Sleeves are applied only for the original ETF universe.")
+        st.caption("Leave these at the defaults unless you need name-level floors or caps. Sleeves apply only for the original ETF universe.")
         bounds_edit = st.data_editor(
             pd.DataFrame(
                 {
@@ -888,49 +1014,55 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.opt
     if payload is None:
-        st.info("Click **Run optimization** to solve minimum-volatility, maximum-Sharpe and the frontier.")
+        _html(style.empty_state("Run optimization to compare the current allocation with efficient portfolios."))
         return
 
     for note in payload["notes"]:
-        st.info(note)
-    for note in payload["bind_min"] + payload["bind_max"]:
-        if "bound" in note.lower() or "sits on" in note.lower() or "not verify" in note.lower():
-            st.warning(note)
-        else:
-            st.caption(note)
+        _html(style.callout(note, "note"))
+    bind_all = payload["bind_min"] + payload["bind_max"]
+    bound_notes = [
+        n for n in bind_all
+        if "bound" in n.lower() or "sits on" in n.lower() or "not verify" in n.lower()
+    ]
+    interior = [n for n in bind_all if n not in bound_notes]
+    if bound_notes:
+        _html(style.callout("Solution is constraint-bound. " + " ".join(bound_notes), "warn"))
+    for note in interior:
+        st.caption(note)
 
     current = payload["current_metrics"]
     min_vol = payload["min_vol"]
     max_sharpe = payload["max_sharpe"]
-    r1 = st.columns(3)
-    for col, name, obj in (
-        (r1[0], "Current", current),
-        (r1[1], "Minimum volatility", min_vol),
-        (r1[2], "Maximum Sharpe", max_sharpe),
-    ):
-        with col:
-            st.markdown(f"**{name}**")
-            if name == "Current":
-                st.write(f"Expected return {fmt_pct(obj['Expected Return'])}")
-                st.write(f"Volatility {fmt_pct(obj['Volatility'])}")
-                st.write(f"Sharpe {fmt_num(obj['Sharpe Ratio'])}")
-            else:
-                st.write(f"Expected return {fmt_pct(obj.expected_return)}")
-                st.write(f"Volatility {fmt_pct(obj.volatility)}")
-                st.write(f"Sharpe {fmt_num(obj.sharpe_ratio)}")
-                conc = opt.concentration_metrics(obj.weights)
-                st.write(f"Effective holdings {fmt_num(conc['Effective Number of Holdings'])}")
-                st.write(
-                    f"Turnover vs current {fmt_pct(opt.turnover(obj.weights, parsed.weights))}"
-                )
-
-    st.dataframe(
+    _section("Current vs efficient portfolios")
+    r1 = st.columns(3, gap="large")
+    _kpi(
+        r1[0],
+        "Current expected return",
+        fmt_pct(current["Expected Return"]),
+        f"Vol {fmt_pct(current['Volatility'])} · Sharpe {fmt_num(current['Sharpe Ratio'])}",
+    )
+    _kpi(
+        r1[1],
+        "Min vol expected return",
+        fmt_pct(min_vol.expected_return),
+        f"Vol {fmt_pct(min_vol.volatility)} · Sharpe {fmt_num(min_vol.sharpe_ratio)} · "
+        f"turnover {fmt_pct(opt.turnover(min_vol.weights, parsed.weights))}",
+    )
+    _kpi(
+        r1[2],
+        "Max Sharpe expected return",
+        fmt_pct(max_sharpe.expected_return),
+        f"Vol {fmt_pct(max_sharpe.volatility)} · Sharpe {fmt_num(max_sharpe.sharpe_ratio)} · "
+        f"turnover {fmt_pct(opt.turnover(max_sharpe.weights, parsed.weights))}",
+    )
+    _table(
         _fmt_table(
             payload["comparison"],
             pct_cols=("Expected Return", "Volatility", "Maximum Weight", "Turnover vs Current"),
-        ),
-        width="stretch",
+            num_cols=("Sharpe Ratio", "Effective Holdings", "Herfindahl Index"),
+        )
     )
+    _section("Efficient frontier", "Constrained mean-variance curve with current, min-vol and max-Sharpe labelled.")
     _chart(
         charts.frontier_chart(
             payload["frontier"],
@@ -939,6 +1071,7 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             (max_sharpe.volatility, max_sharpe.expected_return),
         )
     )
+    _section("Weight comparison")
     _chart(charts.weight_comparison_bar(payload["weights"], ("Current", "Min Vol", "Max Sharpe")))
 
     if st.button("Run expected-return sensitivity"):
@@ -953,8 +1086,8 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             except ValueError as exc:
                 st.error(str(exc))
     if st.session_state.get("opt_sens") is not None:
-        st.markdown("**Expected-return sensitivity (maximum Sharpe)**")
-        st.dataframe(st.session_state.opt_sens, width="stretch")
+        _section("Expected-return sensitivity", "Maximum-Sharpe weights after perturbing one asset’s assumed return.")
+        _table(st.session_state.opt_sens)
 
     if st.button("Compare covariance models"):
         sample = bundle["core"]["annual_covariance"]
@@ -981,8 +1114,8 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
         except Exception as exc:
             st.error(str(exc))
     if st.session_state.get("opt_cov") is not None:
-        st.markdown("**Covariance model comparison**")
-        st.dataframe(st.session_state.opt_cov, width="stretch")
+        _section("Covariance model comparison")
+        _table(st.session_state.opt_cov)
 
 
 def _fit_factors(bundle: dict[str, Any]) -> None:
@@ -1028,10 +1161,12 @@ def _fit_factors(bundle: dict[str, Any]) -> None:
 
 def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
-    st.subheader("Factors")
-    st.caption(
-        "Academic Fama–French/momentum factors and tradeable ETF proxies are **different models**. "
-        "They are shown in separate sections and are never mixed."
+    _html(
+        style.callout(
+            "Academic Fama–French/momentum factors and tradeable ETF proxies are different models. "
+            "They are shown in separate sections and are never mixed.",
+            "note",
+        )
     )
     if st.button("Run factor analysis", type="primary"):
         with st.spinner("Fitting factor regressions…"):
@@ -1039,18 +1174,18 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.factors
     if payload is None:
-        st.info("Click **Run factor analysis** to fit academic and proxy factor models on this portfolio.")
+        _html(style.empty_state("Run factor analysis to estimate academic and proxy factor exposures for this portfolio."))
         return
     for note in payload["notes"]:
-        st.warning(note)
+        _html(style.callout(note, "warn"))
 
     academic = payload.get("academic")
     if academic:
         model = academic["model"]
-        st.markdown("### Academic factors (Fama–French + momentum)")
-        st.caption(
-            f"Factor sample: {fmt_date(model.sample_start)} to **{fmt_date(model.sample_end)}** "
-            f"· {model.n_observations:,} overlapping observations · {model.kind}"
+        _section(
+            "Academic factors",
+            f"Fama–French + momentum · sample {fmt_date(model.sample_start)} to {fmt_date(model.sample_end)} · "
+            f"{model.n_observations:,} overlapping observations.",
         )
         decomp = academic["decomp"]
         contrib = academic["contrib"]
@@ -1059,24 +1194,23 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             (c for c in rolling.columns if "Mkt" in c or c.endswith("Mkt-RF")),
             next((c for c in rolling.columns if c.startswith("Beta:")), None),
         )
-        r1 = st.columns(4)
         mkt = float(academic["exposures"].get(fx.MARKET, float("nan")))
-        _kpi(r1[0], "Portfolio market beta", fmt_num(mkt))
-        _kpi(r1[1], "Systematic risk", fmt_pct(decomp["Systematic Risk %"]))
-        _kpi(r1[2], "Idiosyncratic risk", fmt_pct(decomp["Idiosyncratic Risk %"]))
-        _kpi(r1[3], "Largest factor contributor", str(contrib["Risk Contribution %"].idxmax()))
-        r2 = st.columns(2)
-        _kpi(r2[0], "Mean asset R-squared", fmt_pct(float(model.r_squared.mean())))
-        if beta_col is not None and not rolling.empty:
-            _kpi(r2[1], "Latest rolling market beta", fmt_num(float(rolling[beta_col].iloc[-1])))
-        else:
-            _kpi(r2[1], "Factor observations", f"{model.n_observations:,}")
-
-        _chart(charts.factor_heatmap(model.betas, "Asset factor loadings (academic)"))
-        _chart(charts.factor_exposure_bar(academic["exposures"], "Portfolio factor exposures"))
-        _chart(charts.sys_idio_bar(float(decomp["Systematic Risk %"]), float(decomp["Idiosyncratic Risk %"])))
-        if beta_col is not None:
-            _chart(charts.rolling_beta_chart(rolling[beta_col]))
+        _kpis(
+            [
+                ("Market beta", fmt_num(mkt), "portfolio loading on Mkt-RF", ""),
+                ("Systematic risk", fmt_pct(decomp["Systematic Risk %"]), "share of factor-implied variance", ""),
+                ("Idiosyncratic risk", fmt_pct(decomp["Idiosyncratic Risk %"]), "residual", ""),
+                ("Largest factor", str(contrib["Risk Contribution %"].idxmax()), "Euler contributor", ""),
+            ]
+        )
+        r2 = st.columns(2, gap="large")
+        with r2[0]:
+            _chart(charts.factor_exposure_strip(academic["exposures"], "Portfolio factor exposures"))
+            _chart(charts.sys_idio_bar(float(decomp["Systematic Risk %"]), float(decomp["Idiosyncratic Risk %"])))
+        with r2[1]:
+            _chart(charts.factor_heatmap(model.betas, "Asset factor loadings"))
+            if beta_col is not None:
+                _chart(charts.rolling_beta_chart(rolling[beta_col]))
 
         if st.session_state.opt is not None:
             try:
@@ -1088,35 +1222,38 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
                     },
                     model,
                 )
-                st.markdown("**Current vs optimized factor exposures**")
-                st.dataframe(compared, width="stretch")
+                _section("Current vs optimized factor exposures")
+                _table(compared)
             except Exception as exc:
-                st.info(f"Optimized factor comparison unavailable: {exc}")
+                _html(style.callout(f"Optimized factor comparison unavailable: {exc}", "note"))
 
-        st.markdown("**Factor stress (academic)**")
+        _section("Factor stress", "Linear factor shocks converted to asset shocks and priced by the stress engine.")
         try:
             factor_stress = fx.compare_factor_scenarios(
                 parsed.weights, model, portfolio_value=parsed.portfolio_value
             )
-            st.dataframe(factor_stress, width="stretch")
+            _table(factor_stress)
         except Exception as exc:
-            st.info(str(exc))
-        st.dataframe(academic["loadings"], width="stretch")
+            _html(style.callout(str(exc), "note"))
+        _table(academic["loadings"])
     else:
-        st.info("Academic factor data is not available, so this section is omitted rather than fabricated.")
+        _html(style.empty_state("Academic factor data is not available, so this section is omitted rather than fabricated."))
 
     proxy = payload.get("proxy")
     if proxy:
-        st.markdown("### Tradeable proxy factors")
-        st.caption(
-            f"{proxy['model'].kind}  ·  sample {fmt_date(proxy['model'].sample_start)} to "
-            f"{fmt_date(proxy['model'].sample_end)}. These are directional ETF spreads, not research factors."
+        _section(
+            "Tradeable proxy factors",
+            f"{proxy['model'].kind} · sample {fmt_date(proxy['model'].sample_start)} to "
+            f"{fmt_date(proxy['model'].sample_end)}. Directional ETF spreads, not research factors.",
         )
-        _chart(charts.factor_heatmap(proxy["model"].betas, "Asset factor loadings (proxy)"))
-        _chart(charts.factor_exposure_bar(proxy["exposures"], "Portfolio proxy exposures"))
-        decomp = proxy["decomp"]
-        _chart(charts.sys_idio_bar(float(decomp["Systematic Risk %"]), float(decomp["Idiosyncratic Risk %"])))
-        st.dataframe(proxy["loadings"], width="stretch")
+        p1, p2 = st.columns(2, gap="large")
+        with p1:
+            _chart(charts.factor_exposure_strip(proxy["exposures"], "Portfolio proxy exposures"))
+            decomp = proxy["decomp"]
+            _chart(charts.sys_idio_bar(float(decomp["Systematic Risk %"]), float(decomp["Idiosyncratic Risk %"])))
+        with p2:
+            _chart(charts.factor_heatmap(proxy["model"].betas, "Asset factor loadings (proxy)"))
+        _table(proxy["loadings"])
 
 
 def page_methodology(bundle: dict[str, Any]) -> None:
@@ -1124,13 +1261,9 @@ def page_methodology(bundle: dict[str, Any]) -> None:
     market = bundle["market"]
     core = bundle["core"]
     settings = bundle["settings"]
-    st.subheader("Data & methodology")
+    _section("Scope", "A research and decision-support tool, not a production risk system.")
     st.markdown(
         f"""
-**This is a research and decision-support tool, not a production risk system.**
-Figures describe the sample you loaded. They are not forecasts and they are not
-a substitute for an institutional risk platform.
-
 | Item | Detail |
 |---|---|
 | Data source | Yahoo Finance adjusted daily closes via `yfinance` (`auto_adjust=True`) |
@@ -1146,6 +1279,7 @@ a substitute for an institutional risk platform.
 | Missing prices | Never filled. The panel is truncated to the latest common inception and incomplete dates are dropped. |
 """
     )
+    _section("Methods")
     st.markdown(
         """
 **VaR / CVaR.** Historical figures are empirical quantiles of the realized return
@@ -1172,7 +1306,7 @@ then market beta to SPY. Unmapped names are labelled and left blank unless you
 explicitly authorize a zero shock.
 """
     )
-    st.markdown("**Limitations**")
+    _section("Limitations")
     st.write(
         "- Historical VaR cannot exceed the worst observation in the window.\n"
         "- Gaussian tails understate equity crash risk.\n"
@@ -1181,30 +1315,31 @@ explicitly authorize a zero shock.
         "- Mean-variance weights are unstable in expected returns.\n"
         "- No transaction costs, liquidity, taxes or funding constraints."
     )
-    st.dataframe(core["asset_statistics"], width="stretch")
+    _table(core["asset_statistics"])
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Portfolio Risk & Analytics Platform",
+        page_title="Portfolio Risk Platform",
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    st.markdown(style.inject_css(), unsafe_allow_html=True)
     _init_state()
-    _header()
     page, settings, holdings, analyze = _sidebar()
 
     if analyze or st.session_state.auto_analyze:
         st.session_state.auto_analyze = False
-        with st.spinner("Loading data and running portfolio analytics…"):
+        with st.spinner("Loading market data and running portfolio analytics…"):
             _run_analysis(settings, holdings)
 
     if st.session_state.error is not None:
         _show_error(st.session_state.error)
 
     bundle = st.session_state.bundle
+    _header(bundle, page)
     if bundle is None:
-        st.info("Enter a portfolio in the sidebar and click **Analyze Portfolio**.")
+        _html(style.empty_state("Enter a portfolio in the sidebar and click Analyze Portfolio."))
         return
 
     _downloads(bundle)

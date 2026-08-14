@@ -20,7 +20,6 @@ import pandas as pd
 
 import config
 from src import factors as fx
-from src import monte_carlo as mc
 from src import optimization as opt
 from src import portfolio as pf
 from src import risk
@@ -865,7 +864,7 @@ def custom_scenario_from_shocks(
     name: str = "Custom Scenario",
     description: str = "User-specified per-asset shocks.",
 ) -> Scenario:
-    """Build a Phase 3 scenario from a complete shock vector."""
+    """Build a stress scenario from a complete shock vector."""
     cleaned = {str(k).strip().upper(): float(v) for k, v in shocks.items()}
     if not cleaned:
         raise PortfolioInputError("Enter at least one shock to run a custom scenario.")
@@ -1046,7 +1045,7 @@ def build_constraints(
     asset_bounds: Mapping[str, tuple[float, float]] | None = None,
     use_groups: bool | None = None,
 ) -> tuple[opt.AllocationConstraints, tuple[str, ...]]:
-    """Construct Phase 5 constraints, applying groups only when they are defined."""
+    """Construct allocation constraints, applying groups only when they are defined."""
     labels = [str(a) for a in assets]
     notes: list[str] = []
     cap, cap_note = feasible_max_weight(len(labels), max_weight)
@@ -1214,7 +1213,7 @@ def run_adapted_stress(
     weights: Mapping[str, float] | pd.Series,
     portfolio_value: float,
 ) -> pd.DataFrame:
-    """Compare fully mapped scenarios through the Phase 3 engine."""
+    """Compare fully mapped scenarios through the stress engine."""
     runnable = [item.scenario for item in adapted if item.scenario is not None]
     if not runnable:
         return pd.DataFrame()

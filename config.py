@@ -1,8 +1,7 @@
 """Central configuration for the portfolio risk analytics platform.
 
-All tunable inputs (universe, weights, sample period, annualization
-conventions, risk-free rate) live here so that the analytics layers remain
-free of hard-coded constants.
+Tunable inputs live here so analytics modules stay free of scattered constants.
+Values are conventions, not calibrated “true” parameters.
 """
 
 from __future__ import annotations
@@ -10,16 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# --------------------------------------------------------------------------- #
+# Paths
+# --------------------------------------------------------------------------- #
+
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
 DATA_DIR: Path = PROJECT_ROOT / "data"
 OUTPUT_DIR: Path = PROJECT_ROOT / "outputs"
 
-#: Number of trading days used for all annualization.
-TRADING_DAYS_PER_YEAR: int = 252
-
-#: Annualized, simple-compounded risk-free rate used for Sharpe ratios.
-#: Set this to the average short-term Treasury bill yield over the sample.
-RISK_FREE_RATE: float = 0.02
+# --------------------------------------------------------------------------- #
+# Market data
+# --------------------------------------------------------------------------- #
 
 #: Column of the yfinance download used for return calculations. With
 #: ``auto_adjust=True`` the ``Close`` series is already adjusted for splits
@@ -34,8 +34,41 @@ DEFAULT_END_DATE: str | None = None
 #: Minimum number of usable daily observations required per asset.
 MIN_OBSERVATIONS: int = 252
 
+#: Maximum age of a cached Yahoo Finance price panel before it is refreshed.
+CACHE_MAX_AGE_DAYS: float = 1.0
+
+# --------------------------------------------------------------------------- #
+# Portfolio
+# --------------------------------------------------------------------------- #
+
+#: Number of trading days used for all annualization.
+TRADING_DAYS_PER_YEAR: int = 252
+
+#: Annualized, simple-compounded risk-free rate used for Sharpe ratios.
+#: Set this to the average short-term Treasury bill yield over the sample.
+RISK_FREE_RATE: float = 0.02
+
 #: Tolerance applied when checking that portfolio weights sum to 1.0.
 WEIGHT_SUM_TOLERANCE: float = 1e-6
+
+#: Notional portfolio value used to express stress results in currency terms.
+DEFAULT_PORTFOLIO_VALUE: float = 1_000_000.0
+
+#: Default multi-asset portfolio: US large cap, US tech, US small cap,
+#: developed international equity, long Treasuries, IG credit, gold.
+DEFAULT_WEIGHTS: dict[str, float] = {
+    "SPY": 0.30,
+    "QQQ": 0.15,
+    "IWM": 0.10,
+    "EFA": 0.10,
+    "TLT": 0.15,
+    "LQD": 0.10,
+    "GLD": 0.10,
+}
+
+# --------------------------------------------------------------------------- #
+# Risk
+# --------------------------------------------------------------------------- #
 
 #: Confidence levels for Value at Risk and Expected Shortfall.
 VAR_CONFIDENCE_95: float = 0.95
@@ -48,8 +81,9 @@ ROLLING_WINDOW: int = 252
 RISK_HORIZON_SHORT: int = 1
 RISK_HORIZON_LONG: int = 10
 
-#: Notional portfolio value used to express stress results in currency terms.
-DEFAULT_PORTFOLIO_VALUE: float = 1_000_000.0
+# --------------------------------------------------------------------------- #
+# Stress
+# --------------------------------------------------------------------------- #
 
 #: Equity sleeve used for grouped reverse stress and correlation stress.
 EQUITY_GROUP: tuple[str, ...] = ("SPY", "QQQ", "IWM", "EFA")
@@ -60,6 +94,10 @@ STRESS_CORRELATION_TARGET: float = 0.95
 #: Lookback windows (trading days) for worst historical portfolio periods.
 HISTORICAL_EVENT_HORIZONS: tuple[int, ...] = (1, 5, 10)
 
+# --------------------------------------------------------------------------- #
+# Monte Carlo
+# --------------------------------------------------------------------------- #
+
 #: Monte Carlo defaults: paths, horizon in trading days, and the seed that makes
 #: every simulation in the report reproducible.
 MONTE_CARLO_PATHS: int = 10_000
@@ -68,6 +106,10 @@ MONTE_CARLO_SEED: int = 42
 
 #: Block length (trading days) for the moving-block bootstrap.
 MONTE_CARLO_BLOCK_LENGTH: int = 10
+
+# --------------------------------------------------------------------------- #
+# Optimization
+# --------------------------------------------------------------------------- #
 
 #: Default long-only allocation bounds applied to every asset by the optimizer.
 #: The cap keeps mean-variance solutions from collapsing into one or two names.
@@ -103,8 +145,15 @@ SENSITIVITY_SHIFTS: tuple[float, ...] = (-0.02, -0.01, 0.01, 0.02)
 #: lower than MONTE_CARLO_PATHS because three portfolios are simulated.
 OPTIMIZATION_SIMULATION_PATHS: int = 2_000
 
+# --------------------------------------------------------------------------- #
+# Factor model
+# --------------------------------------------------------------------------- #
+
 #: Window (trading days) for rolling factor regressions.
 FACTOR_ROLLING_WINDOW: int = 252
+
+#: Maximum age of a cached Ken French factor archive before it is refreshed.
+FACTOR_CACHE_MAX_AGE_DAYS: float = 7.0
 
 #: Weight on the sample covariance when shrinking toward a structured target;
 #: ``1 - lambda`` is placed on the target.
@@ -122,17 +171,12 @@ PROXY_FACTOR_DEFINITIONS: dict[str, tuple[str, str | None]] = {
     "Intl Equity": ("VEA", "VTI"),
 }
 
-#: Default multi-asset portfolio: US large cap, US tech, US small cap,
-#: developed international equity, long Treasuries, IG credit, gold.
-DEFAULT_WEIGHTS: dict[str, float] = {
-    "SPY": 0.30,
-    "QQQ": 0.15,
-    "IWM": 0.10,
-    "EFA": 0.10,
-    "TLT": 0.15,
-    "LQD": 0.10,
-    "GLD": 0.10,
-}
+# --------------------------------------------------------------------------- #
+# UI
+# --------------------------------------------------------------------------- #
+
+#: Streamlit page order is defined in ``streamlit_app.py`` (``PAGES``).
+#: Chart colors live in ``ui/charts.py`` so Plotly and CSS stay aligned.
 
 
 @dataclass(frozen=True)

@@ -309,7 +309,7 @@ def load_market_data(
     price_field: str = config.PRICE_FIELD,
     min_observations: int = config.MIN_OBSERVATIONS,
     use_cache: bool = True,
-    cache_max_age_days: float = 1.0,
+    cache_max_age_days: float = config.CACHE_MAX_AGE_DAYS,
 ) -> MarketData:
     """Load aligned adjusted prices and daily simple returns.
 

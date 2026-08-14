@@ -237,7 +237,7 @@ def load_fama_french_factors(
     end: str | None = config.DEFAULT_END_DATE,
     include_momentum: bool = True,
     use_cache: bool = True,
-    cache_max_age_days: float = 7.0,
+    cache_max_age_days: float = config.FACTOR_CACHE_MAX_AGE_DAYS,
     min_observations: int = config.MIN_OBSERVATIONS,
 ) -> FactorData:
     """Load daily Fama-French factors and the risk-free rate.

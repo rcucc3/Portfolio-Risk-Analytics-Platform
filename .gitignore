@@ -1,11 +1,38 @@
-# Cached market data and exported results are reproducible artifacts
+# Cached market data and exported results
 data/*
 outputs/*
 !data/.gitkeep
 !outputs/.gitkeep
 
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Secrets and local environment
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs and temporary files
+*.log
+*.tmp
+.cache/

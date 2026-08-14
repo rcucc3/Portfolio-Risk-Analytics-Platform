@@ -44,7 +44,7 @@ _NONE_LABEL = "n/a"
 #: Terminal-friendly abbreviations for the simulation method names.
 _SHORT_METHOD_LABELS = {"Historical Bootstrap": "Bootstrap", "Block Bootstrap": "Block Boot."}
 
-#: Portfolio labels used across every Phase 5 comparison table.
+#: Portfolio labels used across every allocation comparison table.
 CURRENT = "Current"
 MIN_VOL = "Min Vol"
 MAX_SHARPE = "Max Sharpe"
@@ -84,7 +84,7 @@ def _label(value: object) -> str:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Phase 1 portfolio analytics demo.")
+    parser = argparse.ArgumentParser(description="Multi-asset portfolio risk and scenario analytics report.")
     parser.add_argument("--start", default=config.DEFAULT_START_DATE, help="First date (YYYY-MM-DD).")
     parser.add_argument(
         "--end",
@@ -674,7 +674,7 @@ def print_optimized_stress(table: pd.DataFrame, portfolios: list[str]) -> None:
         cells = "".join(f"{_pct(row[name]):>16}" for name in portfolios)
         print(f"  {str(scenario):<28}{cells}")
     print(
-        "\n  Deterministic scenario returns from the Phase 3 engine: the weighted sum"
+        "\n  Deterministic scenario returns from the stress engine: the weighted sum"
         "\n  of assumed asset shocks, with no probability attached."
     )
 
@@ -843,7 +843,7 @@ def print_factor_stress(
         )
     print(
         "\n  Asset shocks are the linear factor approximation B * factor shocks, priced"
-        "\n  through the Phase 3 engine. Alpha and residual moves are set to zero, and"
+        "\n  through the stress engine. Alpha and residual moves are set to zero, and"
         "\n  betas estimated on daily data are assumed to hold at crisis magnitudes."
         "\n  These are internally consistent assumptions, not forecasts."
     )
@@ -939,7 +939,7 @@ def print_optimization_under_covariance(table: pd.DataFrame, reference: str) -> 
         f"\n  flatters a model that understates risk. The {reference} column re-scores every"
         "\n  solution on one yardstick, and there the sample-covariance portfolios win by"
         "\n  construction, because that is the matrix they were fitted to. Covariance"
-        "\n  choice moves the allocation as much as expected-return choice did in Phase 5."
+        "\n  choice moves the allocation as much as expected-return choice did in the optimization section."
     )
 
 

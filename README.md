@@ -2,211 +2,217 @@
 
 An interactive portfolio risk and decision-support platform built in Python.
 
-The application lets you enter essentially any supported book of publicly traded
-stocks and ETFs, download a common-calendar price history, and run performance,
-risk, stress, Monte Carlo, optimization and factor analytics through one
-product-style interface. The quantitative engines are covered by a large
-deterministic test suite. This is a research and recruiting project, not a
-production risk system.
+Enter a book of stocks or ETFs and run performance, risk, stress testing, Monte Carlo, optimization and factor analysis through one product-style interface. The same quantitative engines power a Streamlit dashboard and a CLI. This is a research and recruiting project, not a production risk system.
 
-![Overview screenshot](docs/screenshots/overview.png)
+It is built as a **reusable application** for user-defined portfolios, not a notebook that only analyzes one hard-coded book.
 
-> **Screenshot placeholder.** After running the app, capture the Overview page
-> (default 7-ETF demo) and save it as `docs/screenshots/overview.png`. Additional
-> captures belong in the same folder; see `docs/screenshots/README.md`.
+Screenshots of the dashboard belong in [`docs/screenshots/`](docs/screenshots/README.md) (Overview, Risk, Stress, Monte Carlo, Optimization, Factors). Capture them from the default demo after the pages are populated.
 
-**Default demo (loads immediately):** SPY 30% · QQQ 15% · IWM 10% · EFA 10% ·
-TLT 15% · LQD 10% · GLD 10% · $1,000,000 notional · sample from 2015-01-01.
+**Default demo (loads on first Analyze):** SPY 30% · QQQ 15% · IWM 10% · EFA 10% · TLT 15% · LQD 10% · GLD 10% · $1,000,000 · sample from 2015-01-01.
 
 ---
 
 ## Key features
 
-- Arbitrary ticker input (manual table or CSV), weights or dollar holdings
-- Live Yahoo Finance download with common-calendar alignment and no price filling
-- Performance: growth, drawdown, rolling return/vol/Sharpe, correlation, return contribution
-- Risk: historical and Gaussian VaR/CVaR, Euler risk contribution, diversification ratio
-- Stress: scenario library adapted to unknown tickers, custom shocks, historical worst windows, reverse stress
-- Monte Carlo: Gaussian, historical bootstrap, moving-block bootstrap
-- Optimization: min-vol, max-Sharpe, constrained frontier, sensitivity, covariance-model comparison
-- Factors: academic Fama–French + momentum **and** tradeable proxy factors, shown as separate models
-- Downloadable CSV / Excel of summary tables (not raw simulation cubes)
+**Input.** Manual table, CSV, or one-click demo. Weights or dollar positions. Invalid tickers are isolated instead of crashing the book.
+
+**Performance.** Growth of $1, drawdown timeline, rolling return/vol/Sharpe, correlations, return contribution.
+
+**Risk.** Historical and Gaussian VaR/CVaR, Euler risk contribution, diversification ratio, capital-vs-risk dumbbell.
+
+**Stress.** Eight library scenarios, mapping for unknown names, custom shocks, historical worst windows, reverse stress. Unmapped names are never silently shocked by 0%.
+
+**Monte Carlo.** Gaussian, historical bootstrap, block bootstrap. Fan chart of percentile bands; sample paths are secondary.
+
+**Optimization.** Minimum volatility, maximum Sharpe, constrained efficient frontier, expected-return sensitivity, covariance-model comparison.
+
+**Factors.** Academic Fama–French + momentum and tradeable proxy ETFs as **separate** models. Systematic vs idiosyncratic split, covariance shrinkage.
 
 ---
 
-## Run the application
+## Interactive dashboard
 
 ```bash
-cd portfolio-risk-platform
-python -m pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-The terminal report is unchanged:
+Eight pages: Overview, Performance, Risk, Stress Tests, Monte Carlo, Optimization, Factors, Data & Methodology.
 
-```bash
-python app.py
-```
-
-A recruiter opening the Streamlit app should see a complete Overview analysis of
-the default ETF portfolio without configuring anything.
+After you capture images, drop them in `docs/screenshots/` using the checklist in that folder. Until then, run the app locally — empty-state screenshots should not go in this README.
 
 ---
 
 ## Architecture
 
-The Streamlit UI does **not** reimplement financial math. It calls `src/`.
+Financial math lives in `src/`. The UI does not reimplement it.
 
 ```mermaid
-flowchart LR
-    UI["streamlit_app.py"] --> Help["src/ui_support.py"]
-    UI --> Charts["ui/charts.py"]
-    Help --> DL["src/data_loader.py"]
-    Help --> PF["src/portfolio.py"]
-    Help --> RK["src/risk.py"]
-    Help --> ST["src/stress.py"]
-    Help --> MC["src/monte_carlo.py"]
-    Help --> OPT["src/optimization.py"]
-    Help --> FX["src/factors.py"]
-    CLI["app.py"] --> DL
-    CLI --> PF
-    CLI --> RK
-    CLI --> ST
-    CLI --> MC
-    CLI --> OPT
-    CLI --> FX
+flowchart TB
+    User[User portfolio] --> Parse[ui_support]
+    Parse --> Data[data_loader]
+    Data --> Port[portfolio]
+    Port --> Risk[risk]
+    Port --> Stress[stress]
+    Port --> MC[monte_carlo]
+    Port --> Opt[optimization]
+    Port --> Fac[factors]
+    Risk --> UI[Streamlit / CLI]
+    Stress --> UI
+    MC --> UI
+    Opt --> UI
+    Fac --> UI
 ```
 
-```
-portfolio-risk-platform/
-├── streamlit_app.py          # Interactive product layer
-├── app.py                    # Terminal report (preserved)
-├── config.py                 # Defaults, conventions, demo weights
-├── ui/charts.py              # Plotly figures
-├── src/
-│   ├── data_loader.py
-│   ├── portfolio.py
-│   ├── risk.py
-│   ├── stress.py
-│   ├── monte_carlo.py
-│   ├── optimization.py
-│   ├── factors.py
-│   └── ui_support.py         # Input parsing, scenario mapping, formatting
-├── tests/
-└── docs/screenshots/
-```
+Details: [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
-## Portfolio input
+## Example analysis
 
-Three methods, all flowing through the same validation:
+Sample output for the **default 7-ETF demo**, using adjusted Yahoo Finance data from **2015-01-05 through 2026-08-14** (2,918 daily returns). Figures move when the vendor revises history or the end date changes. They are not a forecast.
 
-1. **Default demo** — one-click 7-ETF book
-2. **Manual entry** — editable ticker / weight% or dollar-position table
-3. **CSV upload** — `Ticker,Weight` or `Ticker,MarketValue` (column aliases accepted)
-
-Dollar positions become weights as `position_i / portfolio value`. If you do not
-override the notional, the value is the sum of positions. Weights that do not
-sum to 100% are **not** silently rescaled; enable “Normalize weights to 100%”.
-
-Invalid tickers are isolated rather than crashing the app. A recently listed
-name that shortens the common history is called out explicitly.
-
----
-
-## Example portfolios
-
-| Book | What it demonstrates |
+| Metric | Sample value |
 |---|---|
-| Default 7 ETFs | Multi-asset demo used by the CLI |
-| AAPL / MSFT / NVDA / AMZN / JPM | All-equity stock book; scenarios mapped via beta / factors |
-| Two-asset book | Constraint feasibility (a 40% cap is raised so the budget can be filled) |
-| Book including a recent IPO | Common-history truncation warning |
-| Book including `NOTAREAL` | Graceful download error |
+| Annualized return | 10.83% |
+| Annualized volatility | 12.47% |
+| Sharpe ratio (2% RF) | 0.73 |
+| Maximum drawdown | −25.59% |
+| 1-day historical VaR 95% | 1.16% |
+| 1-day historical CVaR 99% | 3.15% |
+| Diversification ratio | 1.38 |
+| Largest risk contributor | SPY (~39.8% of vol from 30% of capital) |
 
 ---
 
-## Methodology (short)
+## Quantitative methods
 
-| Metric | Definition |
-| --- | --- |
+| Topic | One-line definition |
+|---|---|
 | Daily return | `P_t / P_{t-1} - 1` on split/dividend-adjusted closes |
-| Portfolio return | `Σ w_i r_i,t` (constant mix ⇒ daily rebalancing) |
+| Portfolio | Constant mix: `Σ w_i r_i,t` (daily rebalance to target weights) |
 | Annualized return | Geometric / CAGR, 252-day year |
-| Annualized volatility | Sample stdev × √252 |
-| Sharpe | Daily excess returns vs a geometrically de-annualized constant risk-free rate |
-| Historical VaR / CVaR | Empirical quantile / tail mean, reported as **positive loss magnitudes** |
-| Gaussian VaR / CVaR | Normal tail using sample moments |
+| Volatility | Sample stdev × √252 |
+| Sharpe | Daily excess vs a geometrically de-annualized constant RF |
+| Historical VaR / CVaR | Empirical quantile / tail mean, **positive loss magnitudes** |
+| Gaussian VaR / CVaR | Normal tail from sample moments |
 | Multi-day historical VaR | Overlapping compounded windows, not √t scaling |
 | Risk contribution | Euler decomposition of portfolio volatility |
 | Stress P&L | `Σ w_i s_i` on pre-shock weights |
-| Monte Carlo | Correlated Gaussian, day bootstrap, or block bootstrap; horizon-level VaR |
+| Monte Carlo | Correlated Gaussian, day bootstrap, or block bootstrap |
 | Optimization | SLSQP, long-only default, independently verified constraints |
-| Academic factors | Ken French daily FF3 + momentum, percents → decimals |
-| Proxy factors | Tradeable ETF spreads; **not** the same model |
+| Academic factors | Ken French daily FF3 + momentum (percent → decimal) |
+| Proxy factors | Tradeable ETF spreads; not the same model |
 
-Missing prices are never filled. The panel starts at the latest common inception
-and drops any date on which at least one asset is missing.
+Missing prices are never filled. Full write-up: [`docs/methodology.md`](docs/methodology.md).
 
-### Stress mapping for arbitrary securities
+### Stress mapping for unknown names
 
-Predefined scenarios are written on SPY / QQQ / IWM / EFA / TLT / LQD / GLD.
-For any other ticker the UI applies this hierarchy and **does not assume a zero
-shock**:
-
-1. Library shock if the ticker is named in the scenario
-2. Factor-implied shock `s = B f` when an academic factor model has been fitted
-3. Market beta × SPY (or the next available equity proxy) shock
-4. **Unmapped** — labelled, and either a manual shock or an explicit “treat as 0%” opt-in is required
+1. Library shock if the ticker is in the scenario  
+2. Factor-implied `s = Bf` if an academic factor model has been fit  
+3. Market beta × SPY shock  
+4. **Unmapped** — labelled; zero only if you explicitly opt in  
 
 ---
 
-## Testing
+## Testing and validation
 
 ```bash
 python -m pytest
 ```
 
-The quantitative engines are covered by deterministic, offline unit tests.
-Presentation helpers (CSV parsing, weight normalization, scenario mapping,
-formatting, downloads) have their own tests. Streamlit rendering is not
-exhaustively unit-tested.
+Offline unit tests cover the engines plus input parsing, scenario mapping and visual helpers. Streamlit widgets are not screenshot-tested. **545 tests passing.**
 
-| Layer | Tests |
-| --- | --- |
-| Phases 1–6 quantitative engines | 497 |
-| Phase 7 UI helpers | 37 |
-| **Total** | **534 passing** |
+Core identities checked in tests (and in `tests/test_invariants.py`):
+
+- weights sum to 1  
+- return contributions sum to cumulative portfolio return  
+- component vols sum to portfolio vol; risk contribution % sums to 100%  
+- asset stress P&L sums to portfolio P&L  
+- simulated ending return = ending value / start − 1  
+- optimized weights respect budget and bounds  
+- portfolio beta = weighted asset betas  
+- systematic + residual = total factor-implied variance  
+- shrinkage λ = 0 and λ = 1 recover the target and the sample  
 
 ---
 
-## Technology stack
+## Tech stack
 
-Python 3.10+ · pandas · numpy · scipy · yfinance · streamlit · plotly · openpyxl · pytest
+Python 3.10+ · pandas · numpy · scipy · yfinance · Streamlit · Plotly · openpyxl · pytest
+
+---
+
+## Installation
+
+```bash
+cd portfolio-risk-platform
+python -m venv .venv
+```
+
+Windows: `.\.venv\Scripts\Activate.ps1`  
+macOS / Linux: `source .venv/bin/activate`
+
+```bash
+python -m pip install -r requirements.txt
+python -m pytest
+streamlit run streamlit_app.py
+```
+
+No API keys. `data/` and `outputs/` are created as needed. Cloud notes: [`docs/deployment.md`](docs/deployment.md).
+
+---
+
+## Usage
+
+| Command | What it does |
+|---|---|
+| `streamlit run streamlit_app.py` | Interactive dashboard |
+| `python app.py` | Terminal report for the default demo |
+| `python app.py --refresh` | Ignore the on-disk price cache |
+| `python app.py --no-save` | Do not write `outputs/*.csv` |
+
+Interview talking points and a 2–3 minute demo script: [`docs/interview_guide.md`](docs/interview_guide.md).
+
+---
+
+## Methodology and assumptions
+
+- Constant-mix (daily rebalanced) portfolio, not buy-and-hold drift.  
+- 252 trading days / year; default RF 2% annualized.  
+- Weights that do not sum to 100% are **not** silently rescaled.  
+- Ken French factors typically **lag** live prices; sample end dates are shown on purpose.  
+- Mean-variance results are only as good as the expected-return vector.
 
 ---
 
 ## Limitations
 
-This is not institutional production software. In particular:
-
-- Historical VaR cannot exceed the worst observation in the window.
-- Gaussian tails understate equity crash risk.
-- Deterministic scenarios are assumptions, not probabilities.
-- Linear factor stress ignores residual risk, convexity and liquidity.
-- Mean-variance weights are unstable in expected returns; the sensitivity table exists because of that.
-- Ken French data lags live prices; factor sample end dates are shown on purpose.
-- No transaction costs, taxes, slippage, or funding constraints.
-- Yahoo Finance adjusted closes can be revised by the vendor.
-
-Read the engine modules for the full methodology notes. The Data & Methodology
-page in the app surfaces the same caveats next to the live sample dates.
+- Historical VaR cannot exceed the worst observation in the window.  
+- Gaussian tails understate equity crash risk.  
+- Deterministic scenarios are assumptions, not probabilities.  
+- Linear factor stress ignores residual risk, convexity and liquidity.  
+- Max-Sharpe weights are unstable in expected returns.  
+- No transaction costs, taxes, slippage or funding constraints.  
+- Yahoo adjusted closes can be revised by the vendor.
 
 ---
 
-## License / use
+## Project structure
 
-Built as a portfolio project for investment, fintech and asset-management
-interview conversations. Numbers describe the sample you loaded. They are not
-investment advice.
+```
+portfolio-risk-platform/
+├── streamlit_app.py          # Interactive product
+├── app.py                    # Terminal report
+├── config.py                 # Defaults and conventions
+├── requirements.txt
+├── src/                      # Quantitative engines
+├── ui/                       # Charts and CSS helpers
+├── tests/
+├── docs/                     # Architecture, methodology, interview, screenshots
+├── data/                     # Price/factor cache (gitignored)
+└── outputs/                  # CLI CSVs (gitignored)
+```
+
+---
+
+Built as a portfolio project for investment, fintech and asset-management interview conversations. Numbers describe the sample you loaded. They are not investment advice.
