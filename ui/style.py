@@ -1,7 +1,4 @@
-"""Central visual system for the Streamlit product layer.
-
-HTML/CSS helpers only. No financial calculations live here.
-"""
+"""Streamlit HTML/CSS style helpers."""
 
 from __future__ import annotations
 
@@ -249,7 +246,6 @@ div[data-testid="stMetric"] {
 
 
 def inject_css() -> str:
-    """Return the product CSS wrapped for ``st.markdown(..., unsafe_allow_html=True)``."""
     return f"<style>{CSS}</style>"
 
 
@@ -265,7 +261,6 @@ def product_header(
     benchmark: str | None = None,
     mode: str = "Live analysis",
 ) -> str:
-    """Compact product header with an optional status row."""
     status = ""
     if portfolio_value is not None and n_assets is not None and data_through is not None:
         bits = [
@@ -289,7 +284,7 @@ def product_header(
 
 
 def kpi_card(label: str, value: str, context: str = "", tone: str = "") -> str:
-    """Small-label / large-value KPI card. ``tone`` is ``pos``, ``neg``, or empty."""
+    """``tone`` is ``pos``, ``neg``, or empty."""
     klass = f"prp-kpi-value {tone}".strip()
     ctx = f"<div class='prp-kpi-context'>{_esc(context)}</div>" if context else ""
     return (
@@ -352,10 +347,6 @@ def insight_cards_from_metrics(
     hist_cvar_99: float | None = None,
     gauss_cvar_99: float | None = None,
 ) -> list[tuple[str, str]]:
-    """Deterministic insight payloads for the Overview cards.
-
-    Values are already-computed engine outputs; this function only labels them.
-    """
     cards: list[tuple[str, str]] = [
         (
             "Risk concentration",

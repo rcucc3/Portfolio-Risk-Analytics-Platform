@@ -1,9 +1,4 @@
-"""Deterministic unit tests for the portfolio analytics engine.
-
-All fixtures are small synthetic panels; no test touches the network or
-yfinance. Expected values are derived from closed-form expressions rather than
-copied from a previous run.
-"""
+"""Tests for the portfolio engine."""
 
 from __future__ import annotations
 
@@ -30,7 +25,6 @@ def _dates(n: int) -> pd.DatetimeIndex:
 
 @pytest.fixture
 def two_asset_returns() -> pd.DataFrame:
-    """Deterministic two-asset daily return panel."""
     return pd.DataFrame(
         {
             "A": [0.01, -0.02, 0.03, 0.00, 0.015],
@@ -40,9 +34,7 @@ def two_asset_returns() -> pd.DataFrame:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Weight validation
-# --------------------------------------------------------------------------- #
 
 def test_valid_weights_accepted_and_aligned_to_assets():
     weights = pf.validate_weights({"B": 0.4, "A": 0.6}, assets=["A", "B"])
@@ -78,14 +70,11 @@ def test_non_finite_weights_rejected(bad):
 
 
 def test_negative_weights_allowed_when_they_sum_to_one():
-    # Short positions are legitimate; only the budget constraint is enforced.
     weights = pf.validate_weights({"A": 1.5, "B": -0.5})
     assert weights["B"] == pytest.approx(-0.5)
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio return construction
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_returns_match_manual_weighted_sum(two_asset_returns):
     weights = {"A": 0.6, "B": 0.4}
@@ -106,9 +95,7 @@ def test_portfolio_returns_reject_nan_input(two_asset_returns):
         pf.portfolio_returns(corrupted, {"A": 0.6, "B": 0.4})
 
 
-# --------------------------------------------------------------------------- #
 # Performance metrics
-# --------------------------------------------------------------------------- #
 
 def test_cumulative_return_matches_compounded_product():
     returns = pd.Series([0.10, -0.05, 0.02], index=_dates(3))
@@ -123,13 +110,11 @@ def test_growth_of_dollar_is_running_compound_product():
 
 
 def test_cumulative_return_of_offsetting_moves_is_negative():
-    # +10% then -10% loses money; an arithmetic sum would wrongly give zero.
     returns = pd.Series([0.10, -0.10], index=_dates(2))
     assert pf.cumulative_return(returns) == pytest.approx(-0.01)
 
 
 def test_annualized_return_is_geometric_not_arithmetic():
-    # Constant daily return r over exactly one year compounds to (1+r)^252 - 1.
     daily = 0.001
     returns = pd.Series([daily] * TRADING_DAYS, index=_dates(TRADING_DAYS))
     expected = (1 + daily) ** TRADING_DAYS - 1
@@ -138,7 +123,6 @@ def test_annualized_return_is_geometric_not_arithmetic():
 
 
 def test_annualized_return_scales_a_partial_year_sample():
-    # Half a year of data at +21% total annualizes to (1.21)^2 - 1 = 46.41%.
     n = TRADING_DAYS // 2
     daily = 1.21 ** (1 / n) - 1
     returns = pd.Series([daily] * n, index=_dates(n))
@@ -169,7 +153,6 @@ def test_sharpe_ratio_is_zero_when_returns_equal_the_risk_free_rate():
     annual_rf = 0.04
     daily_rf = (1 + annual_rf) ** (1 / TRADING_DAYS) - 1
     returns = pd.Series([daily_rf] * 30, index=_dates(30))
-    # Excess returns are identically zero, so the ratio is undefined (0/0).
     assert math.isnan(pf.sharpe_ratio(returns, annual_rf, TRADING_DAYS))
 
 
@@ -178,9 +161,7 @@ def test_sharpe_ratio_sign_follows_excess_return():
     assert pf.sharpe_ratio(returns, 0.02, TRADING_DAYS) < 0
 
 
-# --------------------------------------------------------------------------- #
 # Drawdown
-# --------------------------------------------------------------------------- #
 
 def test_max_drawdown_matches_hand_computed_path():
     # Growth: 1.10, 0.88, 0.968, 1.0648 -> trough 0.88 vs peak 1.10 = -20%.
@@ -207,9 +188,7 @@ def test_monotonically_rising_series_has_zero_drawdown():
     assert pf.max_drawdown(returns) == pytest.approx(0.0)
 
 
-# --------------------------------------------------------------------------- #
 # Asset-level statistics, covariance, correlation, contribution
-# --------------------------------------------------------------------------- #
 
 def test_asset_statistics_agree_with_single_series_functions(two_asset_returns):
     stats = pf.asset_statistics(two_asset_returns, 0.02, TRADING_DAYS)
@@ -258,9 +237,7 @@ def test_zero_weight_asset_contributes_nothing(two_asset_returns):
     assert contrib.loc["B", "Contribution to Return"] == pytest.approx(0.0)
 
 
-# --------------------------------------------------------------------------- #
 # Summary metrics
-# --------------------------------------------------------------------------- #
 
 def test_summary_metrics_shape_and_consistency(two_asset_returns):
     returns = pf.portfolio_returns(two_asset_returns, {"A": 0.6, "B": 0.4})
@@ -328,9 +305,7 @@ def test_volatility_requires_at_least_two_observations():
         pf.annualized_volatility(pd.Series([0.01], index=_dates(1)))
 
 
-# --------------------------------------------------------------------------- #
 # Data layer (offline: synthetic price panels only)
-# --------------------------------------------------------------------------- #
 
 def test_simple_returns_recover_known_price_ratios():
     prices = pd.DataFrame({"A": [100.0, 110.0, 99.0]}, index=_dates(3))

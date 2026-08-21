@@ -4,6 +4,10 @@ outputs/*
 !data/.gitkeep
 !outputs/.gitkeep
 
+# Local notes (not for public release)
+docs/interview_guide.md
+docs/interview_guide.md.bak
+
 # Python
 __pycache__/
 *.py[cod]

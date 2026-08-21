@@ -1,1 +1,1 @@
-"""Core analytics library for the multi-asset portfolio risk platform."""
+"""Core analytics package."""

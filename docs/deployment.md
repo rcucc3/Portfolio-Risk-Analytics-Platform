@@ -1,78 +1,43 @@
 # Deployment
 
-The dashboard entrypoint is `streamlit_app.py`. Do **not** treat this as a production risk system. The notes below are for a public demo (Streamlit Community Cloud or similar).
+Main entrypoint: `streamlit_app.py`.
 
-## Local run (authoritative)
+## Local
 
-Python **3.10+**. From the `portfolio-risk-platform/` directory:
+From `portfolio-risk-platform/`, with Python 3.10+:
 
 ```bash
 python -m venv .venv
-```
-
-Windows (PowerShell):
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-macOS / Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-```bash
+# activate the venv, then:
 python -m pip install -r requirements.txt
 python -m pytest
 streamlit run streamlit_app.py
 ```
 
-The CLI report is optional:
+Optional CLI report: `python app.py`.
 
-```bash
-python app.py
-```
-
-No API keys, `.env` files, or extra folders are required. `data/` and `outputs/` are created automatically when caches or CSV exports are written.
+No API keys are required. `data/` and `outputs/` are created when the app writes files.
 
 ## Streamlit Community Cloud
 
-1. Push this repository to GitHub (the git root should be `portfolio-risk-platform/`, where `streamlit_app.py` and `requirements.txt` live).
-2. At [share.streamlit.io](https://share.streamlit.io), New app → select the repo.
-3. Main file: `streamlit_app.py`.
-4. Python version: 3.11 or 3.12 if the UI offers a choice.
-5. Deploy. First load downloads Yahoo Finance (and Ken French only if someone runs Factors).
+1. Put `streamlit_app.py` and `requirements.txt` at the repo root you deploy.
+2. Create a new app and set the main file to `streamlit_app.py`.
+3. Use Python 3.11 or 3.12 if the site lets you choose.
 
-Theme comes from `.streamlit/config.toml`.
+Theme settings are in `.streamlit/config.toml`.
 
-## Network dependencies
+## External data
 
 | Source | Used for | If it fails |
 |---|---|---|
-| Yahoo Finance (`yfinance`) | Prices, benchmark, proxy-factor ETFs | Analyze fails with a user-facing error. Invalid tickers are isolated; a total outage blocks new analysis until cache or the vendor recovers. |
-| Ken French data library | Academic factor model | Factors page shows a note and is skipped. Performance, risk, stress, Monte Carlo and optimization still run. |
-| Google Fonts (optional CSS) | IBM Plex | UI falls back to Segoe UI / system-ui. |
+| Yahoo Finance | Prices, benchmark, proxy ETFs | Analyze shows an error; bad tickers are dropped when possible |
+| Ken French | Academic factors | Factor page is skipped; other pages still work |
+| Google Fonts | Optional UI font | Falls back to system fonts |
 
-## Cache and write permissions
+Cached files under `data/` do not persist forever on Cloud. CSV/Excel downloads from the UI are built in memory.
 
-- Price cache: `data/prices_*.csv` (1-day max age).
-- Factor cache: `data/factors_*.csv` (7-day max age).
-- CLI tables: `outputs/*.csv` unless `--no-save`.
-- Streamlit downloads are generated in memory (`st.download_button`); they do not require `outputs/`.
+## Notes
 
-On Streamlit Cloud the filesystem is ephemeral. Caches speed a session; they are not durable storage. The app still starts if `data/` is empty.
-
-If the host is **read-only**, set the UI checkbox “Refresh market data” off and expect downloads to fail once the in-memory cache is cold. Community Cloud generally allows writing to the app directory; if a deploy cannot write, analysis will retry Yahoo each run (slower, still correct).
-
-## Likely deploy issues
-
-- **Cold start / Yahoo rate limits.** First Analyze can take 10–30+ seconds. Retry once; do not assume the code is broken.
-- **Ken French lag or HTML error pages.** Factors fail softly. Do not block the rest of the demo.
-- **Memory.** Default Monte Carlo is 10,000 paths × 252 days. Fine for the 7-asset demo. Avoid raising paths to 20,000 on a free cloud instance during a live demo.
-- **Secrets.** None are required. Do not add API keys to the repo.
-- **Pathing.** All paths are relative to `PROJECT_ROOT` (`Path(__file__).parent` in `config.py`). Do not hard-code machine-specific directories.
-
-## What this project is not
-
-Not hosted as an official cloud app unless you deploy it. Not SOC2, not real-time, not advice. If a resume mentions the project, say “interactive Streamlit app” or “deployable to Streamlit Community Cloud,” not “production deployed,” unless you actually deployed it.
+- The first Yahoo download can take a while.
+- Default Monte Carlo is 10,000 paths x 252 days; keep that for a free host.
+- This project is not claimed as a production deployment unless you deploy it yourself.

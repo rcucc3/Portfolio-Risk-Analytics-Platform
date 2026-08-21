@@ -1,7 +1,4 @@
-"""Plotly chart builders for the Streamlit product.
-
-Figures only — no Streamlit imports. All charts share :func:`apply_chart_theme`.
-"""
+"""Plotly chart builders."""
 
 from __future__ import annotations
 
@@ -44,7 +41,6 @@ def apply_chart_theme(
     x_pct: bool = False,
     show_legend: bool = True,
 ) -> go.Figure:
-    """Apply the shared editorial Plotly theme. Call this from every chart builder."""
     fig.update_layout(
         template="plotly_white",
         title=dict(
@@ -134,7 +130,6 @@ def drawdown_timeline(
     drawdowns: pd.Series,
     window: DrawdownWindow | None = None,
 ) -> go.Figure:
-    """Shaded drawdown path with optional peak / trough / recovery markers."""
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -188,7 +183,6 @@ def drawdown_timeline(
 
 
 def allocation_pie(weights: pd.Series) -> go.Figure:
-    """Compact horizontal allocation bars."""
     ordered = weights.sort_values(ascending=True)
     fig = go.Figure(
         go.Bar(
@@ -227,7 +221,6 @@ def capital_vs_risk_bar(table: pd.DataFrame) -> go.Figure:
 
 
 def capital_vs_risk_dumbbell(table: pd.DataFrame) -> go.Figure:
-    """Horizontal dumbbell: capital weight vs risk contribution per asset."""
     frame = table.copy().sort_values("Risk Contribution %")
     assets = list(frame.index.astype(str))
     fig = go.Figure()
@@ -311,7 +304,6 @@ def risk_map_scatter(
     portfolio_vol: float | None = None,
     portfolio_return: float | None = None,
 ) -> go.Figure:
-    """Return–volatility map; bubble size is portfolio weight when supplied."""
     size = np.full(len(stats), 11.0)
     if weights is not None:
         aligned = weights.reindex(stats.index).fillna(0.0)
@@ -383,7 +375,6 @@ def scenario_loss_bar(table: pd.DataFrame) -> go.Figure:
 
 
 def scenario_waterfall(pnl: pd.DataFrame, title: str = "Scenario P&L waterfall") -> go.Figure:
-    """How each asset adds to or offsets total scenario P&L."""
     series = pnl["Stress P&L"].sort_values()
     measures = ["relative"] * len(series) + ["total"]
     xs = list(series.index.astype(str)) + ["Portfolio"]
@@ -466,14 +457,12 @@ def hist_vs_gaussian_bar(historical: Mapping[str, float], gaussian: Mapping[str,
 def path_percentile_bands(
     values: np.ndarray, percentiles: Sequence[float] = (5, 25, 50, 75, 95)
 ) -> np.ndarray:
-    """Percentile paths across simulated value trajectories. Presentation only."""
     if values.ndim != 2:
         raise ValueError("values must be a (paths, steps) array.")
     return np.percentile(values, list(percentiles), axis=0)
 
 
 def monte_carlo_fan(values: np.ndarray, initial_value: float) -> go.Figure:
-    """Percentile bands of simulated portfolio value over the horizon."""
     bands = path_percentile_bands(values)
     steps = np.arange(values.shape[1])
     p5, p25, p50, p75, p95 = bands
@@ -485,7 +474,7 @@ def monte_carlo_fan(values: np.ndarray, initial_value: float) -> go.Figure:
             fill="toself",
             fillcolor="rgba(30,58,95,0.10)",
             line=dict(width=0),
-            name="5th–95th",
+            name="5th-95th",
             hoverinfo="skip",
         )
     )
@@ -496,7 +485,7 @@ def monte_carlo_fan(values: np.ndarray, initial_value: float) -> go.Figure:
             fill="toself",
             fillcolor="rgba(30,58,95,0.22)",
             line=dict(width=0),
-            name="25th–75th",
+            name="25th-75th",
             hoverinfo="skip",
         )
     )
@@ -674,7 +663,6 @@ def factor_exposure_bar(exposures: pd.Series, title: str) -> go.Figure:
 
 
 def factor_exposure_strip(exposures: pd.Series, title: str = "Portfolio factor exposures") -> go.Figure:
-    """Horizontal diverging bars centered on zero."""
     ORDER = ["Mkt-RF", "MKT", "SMB", "HML", "Mom", "MOM", "RMW", "CMA"]
     present = [name for name in ORDER if name in exposures.index]
     rest = [name for name in exposures.index if name not in present]

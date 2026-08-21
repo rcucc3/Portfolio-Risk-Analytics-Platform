@@ -1,13 +1,4 @@
-"""Deterministic unit tests for the Phase 3 stress testing engine.
-
-Expected values are hand-computed from the scenario algebra rather than copied
-from program output. No test touches the network.
-
-The recurring two-asset example: weights A 60% / B 40% on a $1,000,000
-portfolio with shocks A -10% and B +5% gives a portfolio return of
-0.6*(-0.10) + 0.4*(0.05) = -4.00%, asset P&L of -$60,000 and +$20,000, and a
-stressed value of $960,000.
-"""
+"""Tests for the stress engine."""
 
 from __future__ import annotations
 
@@ -55,9 +46,7 @@ COV_INDEPENDENT = pd.DataFrame(
 )
 
 
-# --------------------------------------------------------------------------- #
 # Scenario data model
-# --------------------------------------------------------------------------- #
 
 def test_scenario_normalizes_ticker_labels():
     scenario = stress.Scenario(name="S", shocks={" spy ": -0.2, "qqq": -0.3})
@@ -110,9 +99,7 @@ def test_scenario_as_series_round_trips():
     assert series.to_dict() == pytest.approx({"SPY": -0.2, "TLT": 0.05})
 
 
-# --------------------------------------------------------------------------- #
 # Shock alignment
-# --------------------------------------------------------------------------- #
 
 def test_missing_assets_default_to_zero_shock():
     scenario = stress.Scenario(name="Partial", shocks={"A": -0.10})
@@ -147,9 +134,7 @@ def test_duplicate_portfolio_assets_are_rejected(simple_scenario):
         stress.scenario_shock_vector(simple_scenario, ["A", "A", "B"])
 
 
-# --------------------------------------------------------------------------- #
 # Core deterministic engine
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_stress_return_is_the_weighted_shock_sum(simple_scenario):
     assert stress.stress_portfolio_return(WEIGHTS, simple_scenario) == pytest.approx(-0.04)
@@ -180,7 +165,6 @@ def test_stressed_value_equals_start_plus_pnl(simple_scenario):
 def test_hedging_asset_keeps_its_positive_pnl(simple_scenario):
     table = stress.stress_pnl_table(WEIGHTS, simple_scenario, VALUE)
     assert table.loc["B", "Stress P&L"] > 0
-    # ... and a negative contribution to the loss, rather than an absolute value.
     assert table.loc["B", "Contribution to Total Loss %"] == pytest.approx(-1 / 3)
 
 
@@ -235,9 +219,7 @@ def test_weights_that_do_not_sum_to_one_are_rejected(simple_scenario):
         stress.stress_pnl_table({"A": 0.6, "B": 0.6}, simple_scenario, VALUE)
 
 
-# --------------------------------------------------------------------------- #
 # Edge-case scenarios
-# --------------------------------------------------------------------------- #
 
 def test_empty_scenario_produces_no_pnl():
     empty = stress.Scenario(name="Flat", shocks={})
@@ -251,7 +233,6 @@ def test_empty_scenario_produces_no_pnl():
 def test_all_zero_shock_scenario_leaves_contributions_undefined():
     flat = stress.Scenario(name="Zero", shocks={"A": 0.0, "B": 0.0})
     table = stress.stress_pnl_table(WEIGHTS, flat, VALUE)
-    # Attribution of a zero outcome is undefined; it is reported as NaN, not 0.
     assert table["Contribution to Portfolio P&L %"].isna().all()
     assert table["Contribution to Total Loss %"].isna().all()
 
@@ -274,9 +255,7 @@ def test_all_negative_scenario_has_no_hedge():
     assert result["Largest Loss Contributor"] == "B"  # 0.4 * -0.20 = -80,000
 
 
-# --------------------------------------------------------------------------- #
 # Predefined library
-# --------------------------------------------------------------------------- #
 
 def test_predefined_library_covers_the_required_scenarios():
     names = {s.name for s in stress.PREDEFINED_SCENARIOS}
@@ -330,9 +309,7 @@ def test_get_scenario_is_case_insensitive_and_raises_on_unknown():
         stress.get_scenario("No Such Scenario")
 
 
-# --------------------------------------------------------------------------- #
 # Scenario comparison
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def three_scenarios() -> list[stress.Scenario]:
@@ -381,9 +358,7 @@ def test_predefined_library_runs_end_to_end_on_the_default_portfolio():
     assert table.index[0] == "Global Equity Crash"
 
 
-# --------------------------------------------------------------------------- #
 # Historical calibration and events
-# --------------------------------------------------------------------------- #
 
 def test_worst_one_day_event_is_located_correctly(small_panel):
     event = stress.worst_historical_event(small_panel, {"A": 0.5, "B": 0.5}, 1)
@@ -416,7 +391,6 @@ def test_multi_day_event_reports_the_compounding_residual(small_panel):
     expected_linear = 0.5 * (0.98 * 0.90 - 1) + 0.5 * (1.01 * 1.04 - 1)
     assert event.weighted_asset_return == pytest.approx(expected_linear)
     assert event.compounding_residual == pytest.approx(-0.03485 - expected_linear)
-    # The realized compounded return is not the linear approximation.
     assert event.portfolio_return != pytest.approx(event.weighted_asset_return, abs=1e-6)
 
 
@@ -439,7 +413,6 @@ def test_event_window_lies_entirely_within_the_sample(small_panel):
 
 
 def test_event_identification_uses_no_future_data(small_panel):
-    # Truncating the sample after the crash must not change the identified window.
     truncated = small_panel.iloc[:4]
     full_event = stress.worst_historical_event(small_panel, {"A": 0.5, "B": 0.5}, 2)
     truncated_event = stress.worst_historical_event(truncated, {"A": 0.5, "B": 0.5}, 2)
@@ -452,7 +425,6 @@ def test_historical_joint_scenario_preserves_cross_asset_consistency(small_panel
     scenario = stress.historical_joint_scenario(small_panel, {"A": 0.5, "B": 0.5}, 1)
     assert isinstance(scenario, stress.Scenario)
     assert scenario.category == "Historical"
-    # On the worst day B actually rose, and that is preserved rather than shocked down.
     assert scenario.shocks["A"] == pytest.approx(-0.10)
     assert scenario.shocks["B"] == pytest.approx(0.04)
 
@@ -462,7 +434,6 @@ def test_independent_worst_shocks_differ_from_the_joint_scenario(small_panel):
     joint = stress.historical_joint_scenario(small_panel, {"A": 0.5, "B": 0.5}, 1)
     assert independent["A"] == pytest.approx(-0.10)
     assert independent["B"] == pytest.approx(-0.01)  # B's own worst day, a different date
-    # Stitching independent worst days invents a combination that never occurred.
     assert independent["B"] != pytest.approx(joint.shocks["B"])
 
 
@@ -475,7 +446,6 @@ def test_historical_asset_shocks_support_percentiles(small_panel):
 
 def test_historical_asset_shocks_compound_over_the_horizon(small_panel):
     shocks = stress.historical_asset_shocks(small_panel, horizon=2)
-    # A's worst 2-day window is days 1-2: 0.98 * 0.90 - 1.
     assert shocks["A"] == pytest.approx(0.98 * 0.90 - 1)
 
 
@@ -500,9 +470,7 @@ def test_historical_event_horizon_cannot_exceed_the_sample(small_panel):
         stress.worst_historical_event(small_panel, {"A": 0.5, "B": 0.5}, 10)
 
 
-# --------------------------------------------------------------------------- #
 # Reverse stress testing
-# --------------------------------------------------------------------------- #
 
 def test_single_asset_reverse_stress_closed_form():
     result = stress.reverse_stress_shock(WEIGHTS, "A", -0.12)
@@ -533,7 +501,6 @@ def test_reverse_stress_solution_survives_a_round_trip_through_the_engine():
 
 
 def test_reverse_stress_accounts_for_fixed_shocks():
-    # B is held at +5%, contributing 0.4 * 0.05 = +0.02, so A must supply -0.10.
     result = stress.reverse_stress_shock(WEIGHTS, "A", -0.08, fixed_shocks={"B": 0.05})
     assert result["Fixed Contribution"] == pytest.approx(0.02)
     assert result["Required Shock"] == pytest.approx(-0.10 / 0.6)
@@ -578,9 +545,7 @@ def test_reverse_stress_validates_inputs():
         stress.reverse_stress_shock(WEIGHTS, "A", -0.10, fixed_shocks={"ZZZ": 0.01})
 
 
-# --------------------------------------------------------------------------- #
 # Correlation / covariance stress
-# --------------------------------------------------------------------------- #
 
 def test_correlation_stress_preserves_asset_variances():
     stressed = stress.stress_correlations(COV_INDEPENDENT, 0.9)
@@ -653,8 +618,6 @@ def test_rising_correlations_degrade_diversification():
 def test_psd_repair_triggers_on_an_impossible_correlation_request():
     labels = ["A", "B", "C"]
     volatility = np.array([0.2, 0.25, 0.3])
-    # A and B are strongly negatively correlated but move oppositely against C,
-    # so forcing corr(A, B) to +0.95 is geometrically impossible.
     correlation = np.array([[1.0, -0.8, -0.9], [-0.8, 1.0, 0.9], [-0.9, 0.9, 1.0]])
     baseline = pd.DataFrame(
         np.outer(volatility, volatility) * correlation, index=labels, columns=labels
@@ -666,8 +629,6 @@ def test_psd_repair_triggers_on_an_impossible_correlation_request():
     np.testing.assert_allclose(
         np.diag(stressed.to_numpy()), np.diag(baseline.to_numpy()), rtol=0, atol=1e-18
     )
-    # The repair pulls the pair back from the impossible target, but the
-    # correlation still moves in the requested direction.
     repaired_correlation = stressed.loc["A", "B"] / (0.2 * 0.25)
     assert -0.8 < repaired_correlation < 0.95
 
@@ -712,16 +673,12 @@ def test_correlation_stress_matches_a_return_derived_covariance():
     stressed = stress.stress_correlations(annual_cov, 1.0)
     standalone = pf.asset_annualized_volatility(panel)
     weights = {"A": 0.7, "B": 0.3}
-    # With correlation forced to 1 the portfolio volatility collapses to the
-    # weighted average of the Phase 1 standalone volatilities.
     assert risk.portfolio_volatility(weights, stressed) == pytest.approx(
         float((pd.Series(weights) * standalone).sum()), rel=1e-12
     )
 
 
-# --------------------------------------------------------------------------- #
 # Stress summary
-# --------------------------------------------------------------------------- #
 
 def test_stress_summary_core_fields(simple_scenario):
     summary = stress.stress_summary(WEIGHTS, simple_scenario, VALUE)
@@ -757,9 +714,7 @@ def test_stress_summary_adds_volatility_fields_when_supplied(simple_scenario):
     )
 
 
-# --------------------------------------------------------------------------- #
 # Cross-cutting reconciliation
-# --------------------------------------------------------------------------- #
 
 def test_every_predefined_scenario_reconciles_on_the_default_portfolio():
     import config

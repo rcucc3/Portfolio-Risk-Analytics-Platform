@@ -1,11 +1,4 @@
-"""Interactive Streamlit product layer for the portfolio risk platform.
-
-The quantitative engines in ``src/`` remain the source of truth. This file
-handles input, navigation, caching and display only.
-
-Run:
-    streamlit run streamlit_app.py
-"""
+"""Streamlit UI for the portfolio risk platform."""
 
 from __future__ import annotations
 
@@ -189,8 +182,7 @@ def _table(
                         val.replace("%", "")
                         .replace(",", "")
                         .replace("$", "")
-                        .replace("−", "-")
-                        .replace("—", "")
+                        .strip()
                     )
                     if raw in {"", "-"}:
                         return ""
@@ -440,7 +432,7 @@ def _sidebar() -> tuple[str, dict[str, Any], pd.DataFrame, bool]:
         fill_unmapped = st.checkbox(
             "Treat unmapped scenario shocks as 0% (explicit)",
             value=False,
-            help="Off by default. Unknown names are never silently shocked by zero.",
+            help="Off by default. Unknown names are never zero-shocked silently.",
         )
 
     settings = {
@@ -533,7 +525,7 @@ def page_overview(bundle: dict[str, Any]) -> None:
         ]
     )
 
-    _section("Cumulative performance", "Portfolio growth of $1 versus the selected benchmark.")
+    _section("Cumulative performance", "Growth of $1 vs benchmark.")
     c1, c2 = st.columns((2.05, 1), gap="large")
     with c1:
         _chart(
@@ -547,7 +539,7 @@ def page_overview(bundle: dict[str, Any]) -> None:
     with c2:
         _chart(charts.allocation_pie(parsed.weights))
 
-    _section("Capital vs risk", "Where capital is allocated versus where volatility actually comes from.")
+    _section("Capital vs risk", "Capital weights vs volatility contribution.")
     left, right = st.columns((1.35, 1), gap="large")
     with left:
         _chart(charts.capital_vs_risk_dumbbell(core["risk_contribution"]))
@@ -579,15 +571,15 @@ def page_overview(bundle: dict[str, Any]) -> None:
         for label, body in cards:
             _html(style.insight_card(label, body))
 
-    _section("Drawdown timeline", "Peak-to-trough path of the maximum drawdown, with recovery when it occurs in-sample.")
+    _section("Drawdown timeline", "Peak-to-trough path of the maximum drawdown.")
     _chart(charts.drawdown_timeline(core["drawdowns"], core["drawdown_window"]))
 
 
 def page_performance(bundle: dict[str, Any]) -> None:
     core = bundle["core"]
-    _section("Growth", "Cumulative growth of $1 versus the selected benchmark.")
+    _section("Growth", "Cumulative growth of $1 vs benchmark.")
     _chart(charts.growth_chart(core["growth"], core["benchmark_growth"], bundle["benchmark_name"], ""))
-    _section("Risk map", "Asset return versus volatility; bubble size is portfolio weight.")
+    _section("Risk map", "Return vs volatility; bubble size is weight.")
     _chart(
         charts.risk_map_scatter(
             core["asset_statistics"],
@@ -600,7 +592,7 @@ def page_performance(bundle: dict[str, Any]) -> None:
     if core.get("rolling_note"):
         _html(style.callout(str(core["rolling_note"]), "warn"))
     elif not rolling.empty:
-        _section("Rolling analytics", "Trailing window estimates; the first incomplete window is omitted.")
+        _section("Rolling analytics", "Trailing window estimates.")
         c1, c2 = st.columns(2, gap="large")
         with c1:
             if "Rolling Annualized Return" in rolling.columns:
@@ -609,7 +601,7 @@ def page_performance(bundle: dict[str, Any]) -> None:
         with c2:
             _chart(charts.rolling_metric_chart(rolling["Rolling Sharpe Ratio"], "Rolling Sharpe ratio", y_pct=False))
             _chart(charts.drawdown_timeline(core["drawdowns"], core["drawdown_window"]))
-    _section("Correlation and contribution", "Pairwise daily correlations and each asset’s share of cumulative return.")
+    _section("Correlation and contribution", "Pairwise correlations and return contribution.")
     c3, c4 = st.columns(2, gap="large")
     with c3:
         _chart(charts.correlation_heatmap(core["correlation"]))
@@ -641,8 +633,7 @@ def page_risk(bundle: dict[str, Any]) -> None:
     kpis = core["risk_summary"]
     _html(
         style.callout(
-            "VaR and CVaR on this page are daily tail measures unless a horizon is named. "
-            "Simulated multi-day risk lives on the Monte Carlo page.",
+            "VaR/CVaR here are daily unless a horizon is named. Multi-day simulated risk is on Monte Carlo.",
             "note",
         )
     )
@@ -664,9 +655,9 @@ def page_risk(bundle: dict[str, Any]) -> None:
             ("Gaussian CVaR 95%", fmt_pct(kpis["1-Day Gaussian CVaR 95%"]), "parametric", ""),
         ]
     )
-    _section("Capital vs risk", "Assets that sit far from the diagonal concentrate risk relative to capital.")
+    _section("Capital vs risk", "Weight vs risk contribution; off-diagonal names concentrate risk.")
     _chart(charts.capital_vs_risk_dumbbell(core["risk_contribution"]))
-    _section("Historical vs Gaussian tails", "A gap at 99% is typical for equity-heavy books with fat left tails.")
+    _section("Historical vs Gaussian tails", "99% gaps are typical for fat left tails.")
     _chart(
         charts.hist_vs_gaussian_bar(
             {
@@ -687,13 +678,13 @@ def page_risk(bundle: dict[str, Any]) -> None:
     if not rolling.empty:
         var_col = [c for c in rolling.columns if "VaR" in c][0]
         cvar_col = [c for c in rolling.columns if "CVaR" in c][0]
-        _section("Rolling risk", "Trailing historical VaR and CVaR on the configured window.")
+        _section("Rolling risk", "Trailing historical VaR and CVaR.")
         c1, c2 = st.columns(2, gap="large")
         with c1:
             _chart(charts.rolling_metric_chart(rolling[var_col], var_col))
         with c2:
             _chart(charts.rolling_metric_chart(rolling[cvar_col], cvar_col))
-    _section("Return distribution", "Daily portfolio returns with historical VaR thresholds.")
+    _section("Return distribution", "Daily returns with historical VaR thresholds.")
     _chart(
         charts.distribution_chart(
             core["portfolio_returns"],
@@ -702,7 +693,7 @@ def page_risk(bundle: dict[str, Any]) -> None:
             "",
         )
     )
-    _section("Risk contribution", "Euler decomposition of annualized portfolio volatility.")
+    _section("Risk contribution", "Euler decomposition of annualized volatility.")
     _table(
         _fmt_table(
             core["risk_contribution"],
@@ -711,7 +702,7 @@ def page_risk(bundle: dict[str, Any]) -> None:
         highlight_neg=("Risk Contribution %",),
     )
     if not core["tail_risk"].empty:
-        _section("Multi-day empirical tail risk", "Overlapping compounded windows — not square-root-of-time scaling.")
+        _section("Multi-day empirical tail risk", "Overlapping compounded windows (not √t scaling).")
         _table(core["tail_risk"])
 
 
@@ -720,9 +711,8 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     market = bundle["market"]
     _html(
         style.callout(
-            "Library scenarios are defined on the demo ETF universe. Unknown tickers are mapped "
-            "by library match, then factor-implied shocks if a factor model has been run, then "
-            "market beta to SPY. Unmapped names are never silently shocked by zero.",
+            "Library scenarios target the demo ETF universe. Unknown tickers map by "
+            "library match, then factor-implied shocks, then SPY beta. Unmapped names are not zero-shocked.",
             "note",
         )
     )
@@ -766,8 +756,8 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             [
                 ("Dollar P&L", fmt_money(row["Dollar P&L"]), selected, "neg" if row["Dollar P&L"] < 0 else "pos"),
                 ("Stressed value", fmt_money(row["Stressed Portfolio Value"]), fmt_pct(row["Portfolio Stress Return"]), ""),
-                ("Largest loss", str(row["Largest Loss Contributor"]) if pd.notna(row["Largest Loss Contributor"]) else "—", "contributor", "neg"),
-                ("Largest hedge", str(hedge) if pd.notna(hedge) else "—", "offset", "pos" if pd.notna(hedge) else ""),
+                ("Largest loss", str(row["Largest Loss Contributor"]) if pd.notna(row["Largest Loss Contributor"]) else "-", "contributor", "neg"),
+                ("Largest hedge", str(hedge) if pd.notna(hedge) else "-", "offset", "pos" if pd.notna(hedge) else ""),
             ]
         )
         _html(style.callout(chosen.description, "note"))
@@ -817,7 +807,7 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             highlight_neg=("Stress P&L", "Contribution to Portfolio P&L %"),
         )
 
-    _section("Historical worst windows", "Realized compounded losses on this portfolio — not hypothetical shocks.")
+    _section("Historical worst windows", "Realized compounded losses, not hypothetical shocks.")
     events = bundle["core"]["historical_events"]
     _table(
         _fmt_table(events, pct_cols=("Portfolio Return", "Weighted Asset Return", "Worst Asset Return"))
@@ -830,7 +820,7 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     _chart(charts.scenario_waterfall(hist_pnl, f"{horizon} event contribution"))
     _table(hist_pnl, highlight_neg=("Stress P&L", "Contribution to Portfolio P&L %"))
 
-    _section("Reverse stress", "Uniform shock required on the selected names to reach a target portfolio loss.")
+    _section("Reverse stress", "Uniform shock on selected names to hit a target portfolio loss.")
     target_pct = st.number_input("Target portfolio loss (%)", value=-10.0, step=1.0)
     shocked = st.multiselect("Assets allowed to move", parsed.tickers, default=list(parsed.tickers[:1]))
     if st.button("Solve reverse stress") and shocked:
@@ -840,7 +830,7 @@ def page_stress(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             if not bool(result.get("Feasible", True)):
                 _html(
                     style.callout(
-                        "The required shock is below -100% and is infeasible for a long unlevered position.",
+                        "Required shock is below -100% (infeasible for a long unlevered book).",
                         "warn",
                     )
                 )
@@ -853,8 +843,7 @@ def page_monte_carlo(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     market = bundle["market"]
     _html(
         style.callout(
-            "These figures are horizon-level simulated outcomes, not daily VaR. "
-            "Paths are generated only when you click Run.",
+            "Horizon-level simulated outcomes, not daily VaR. Paths run when you click Run.",
             "note",
         )
     )
@@ -898,7 +887,7 @@ def page_monte_carlo(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.mc
     if payload is None:
-        _html(style.empty_state("Run Monte Carlo to generate simulated outcome distributions."))
+        _html(style.empty_state("Run Monte Carlo to see simulated ending values."))
         return
 
     result = payload["result"]
@@ -977,14 +966,13 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
     _html(
         style.callout(
-            "Mean-variance results are extremely sensitive to expected-return assumptions. "
-            "Use the sensitivity table before treating an allocation as a recommendation.",
+            "Mean-variance is sensitive to expected returns. Check the sensitivity table before acting on weights.",
             "note",
         )
     )
     n = len(parsed.tickers)
     with st.expander("Allocation constraints", expanded=False):
-        st.caption("Leave these at the defaults unless you need name-level floors or caps. Sleeves apply only for the original ETF universe.")
+        st.caption("Defaults are fine unless you need name floors/caps. Sleeves apply only to the demo ETF universe.")
         bounds_edit = st.data_editor(
             pd.DataFrame(
                 {
@@ -1014,7 +1002,7 @@ def page_optimization(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.opt
     if payload is None:
-        _html(style.empty_state("Run optimization to compare the current allocation with efficient portfolios."))
+        _html(style.empty_state("Run optimization to compare this book with min-vol and max-Sharpe."))
         return
 
     for note in payload["notes"]:
@@ -1163,8 +1151,7 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
     parsed = bundle["parsed"]
     _html(
         style.callout(
-            "Academic Fama–French/momentum factors and tradeable ETF proxies are different models. "
-            "They are shown in separate sections and are never mixed.",
+            "Academic Fama-French/momentum and tradeable ETF proxies are separate models. They are never mixed.",
             "note",
         )
     )
@@ -1174,7 +1161,7 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
 
     payload = st.session_state.factors
     if payload is None:
-        _html(style.empty_state("Run factor analysis to estimate academic and proxy factor exposures for this portfolio."))
+        _html(style.empty_state("Run factor analysis to estimate exposures."))
         return
     for note in payload["notes"]:
         _html(style.callout(note, "warn"))
@@ -1184,7 +1171,7 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
         model = academic["model"]
         _section(
             "Academic factors",
-            f"Fama–French + momentum · sample {fmt_date(model.sample_start)} to {fmt_date(model.sample_end)} · "
+            f"Fama-French + momentum · sample {fmt_date(model.sample_start)} to {fmt_date(model.sample_end)} · "
             f"{model.n_observations:,} overlapping observations.",
         )
         decomp = academic["decomp"]
@@ -1227,7 +1214,7 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             except Exception as exc:
                 _html(style.callout(f"Optimized factor comparison unavailable: {exc}", "note"))
 
-        _section("Factor stress", "Linear factor shocks converted to asset shocks and priced by the stress engine.")
+        _section("Factor stress", "Linear factor shocks → asset shocks → stress P&L.")
         try:
             factor_stress = fx.compare_factor_scenarios(
                 parsed.weights, model, portfolio_value=parsed.portfolio_value
@@ -1237,14 +1224,14 @@ def page_factors(bundle: dict[str, Any], settings: dict[str, Any]) -> None:
             _html(style.callout(str(exc), "note"))
         _table(academic["loadings"])
     else:
-        _html(style.empty_state("Academic factor data is not available, so this section is omitted rather than fabricated."))
+        _html(style.empty_state("Academic factor data unavailable; section omitted."))
 
     proxy = payload.get("proxy")
     if proxy:
         _section(
             "Tradeable proxy factors",
             f"{proxy['model'].kind} · sample {fmt_date(proxy['model'].sample_start)} to "
-            f"{fmt_date(proxy['model'].sample_end)}. Directional ETF spreads, not research factors.",
+            f"{fmt_date(proxy['model'].sample_end)}. ETF spreads, not research factors.",
         )
         p1, p2 = st.columns(2, gap="large")
         with p1:
@@ -1261,7 +1248,7 @@ def page_methodology(bundle: dict[str, Any]) -> None:
     market = bundle["market"]
     core = bundle["core"]
     settings = bundle["settings"]
-    _section("Scope", "A research and decision-support tool, not a production risk system.")
+    _section("Scope", "Research tool, not a production risk system.")
     st.markdown(
         f"""
 | Item | Detail |
@@ -1276,34 +1263,27 @@ def page_methodology(bundle: dict[str, Any]) -> None:
 | Rebalancing | Daily to target weights (constant-mix) |
 | Risk-free rate | {fmt_pct(settings['risk_free_rate'])} annualized, geometrically de-annualized for Sharpe |
 | Portfolio value | {fmt_money(parsed.portfolio_value)} |
-| Missing prices | Never filled. The panel is truncated to the latest common inception and incomplete dates are dropped. |
+| Missing prices | Never filled. Panel truncated to latest common inception; incomplete dates dropped. |
 """
     )
     _section("Methods")
     st.markdown(
         """
-**VaR / CVaR.** Historical figures are empirical quantiles of the realized return
-distribution (positive loss magnitudes). Gaussian figures use the sample mean and
-volatility with a normal tail. Multi-day historical VaR uses overlapping compounded
-windows, not square-root-of-time scaling.
+**VaR / CVaR.** Historical = empirical quantiles (positive loss). Gaussian = normal tail
+from sample mean/vol. Multi-day historical uses overlapping compounded windows, not √t.
 
-**Monte Carlo.** Gaussian draws correlated normal daily returns. The historical
-bootstrap resamples whole days. The moving-block bootstrap keeps short-run serial
-dependence. Ending-value VaR/CVaR are horizon-level, not daily.
+**Monte Carlo.** Gaussian draws correlated normals. Historical bootstrap resamples days.
+Block bootstrap keeps short-run dependence. Ending-value VaR/CVaR are horizon-level.
 
-**Optimization.** Long-only (unless disabled), fully invested, SLSQP with analytic
-gradients. Solver `success` is independently re-checked against the constraints.
-Expected returns default to geometric annualized history and are the least reliable
-input in the system.
+**Optimization.** Long-only (unless disabled), fully invested, SLSQP with analytic gradients.
+Solver `success` is re-checked. Expected returns default to geometric history (least reliable input).
 
-**Factors.** Academic factors come from Ken French's data library (percentages
-converted to decimals) and typically lag live prices by several weeks. Proxy factors
-are tradeable ETF spreads and are **not** the same model.
+**Factors.** Academic factors from Ken French (percent → decimal); typically lag live prices.
+Proxy factors are tradeable ETF spreads, **not** the same model.
 
-**Scenarios.** Predefined shocks are analyst assumptions for the original seven ETFs.
-Arbitrary tickers are mapped by library match, then `s = Bf` if a factor model exists,
-then market beta to SPY. Unmapped names are labelled and left blank unless you
-explicitly authorize a zero shock.
+**Scenarios.** Predefined shocks are assumptions for the original seven ETFs. Arbitrary tickers
+map by library match, then `s = Bf` if a factor model exists, then SPY beta. Unmapped names
+stay blank unless you authorize a zero shock.
 """
     )
     _section("Limitations")

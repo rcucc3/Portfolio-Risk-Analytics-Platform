@@ -1,10 +1,4 @@
-"""Deterministic unit tests for the Phase 4 Monte Carlo engine.
-
-Every test is offline and seeded. Expected values are hand-computed from the
-compounding and quantile algebra, or checked against a brute-force
-implementation, rather than copied from program output. Sample sizes are kept
-small enough that the whole module runs in a few seconds.
-"""
+"""Tests for the Monte Carlo engine."""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ from src import portfolio as pf
 from src import risk
 from src import stress
 
-#: Daily covariance for two assets: 2% and 3% daily vol, correlation 0.2.
 COV = pd.DataFrame(
     [[0.0004, 0.00012], [0.00012, 0.0009]], index=["A", "B"], columns=["A", "B"]
 )
@@ -45,7 +38,6 @@ def traceable_panel() -> pd.DataFrame:
 
 
 def _result(terminal_returns, initial_value: float = 1000.0) -> mc.SimulationResult:
-    """Build a one-day SimulationResult with prescribed terminal returns."""
     returns = np.asarray(terminal_returns, dtype="float64").reshape(-1, 1)
     values = mc.portfolio_value_paths(returns, initial_value)
     return mc.SimulationResult(
@@ -60,9 +52,7 @@ def _result(terminal_returns, initial_value: float = 1000.0) -> mc.SimulationRes
     )
 
 
-# --------------------------------------------------------------------------- #
 # Gaussian simulation
-# --------------------------------------------------------------------------- #
 
 def test_gaussian_output_shape_is_paths_days_assets():
     simulated = mc.simulate_gaussian_returns([0.0, 0.0], COV, n_paths=7, horizon=5, seed=1)
@@ -90,13 +80,10 @@ def test_gaussian_reproduces_the_target_mean_and_covariance():
 
 
 def test_gaussian_accepts_a_singular_but_valid_covariance():
-    # Perfectly collinear assets: rank 1, smallest eigenvalue exactly zero.
     singular = pd.DataFrame(
         np.outer([0.02, 0.03], [0.02, 0.03]), index=["A", "B"], columns=["A", "B"]
     )
     simulated = mc.simulate_gaussian_returns([0.0, 0.0], singular, n_paths=50, horizon=20, seed=3)
-    # Every draw must satisfy the linear relationship B = 1.5 * A, up to the
-    # rounding of an eigendecomposition of a rank-deficient matrix.
     np.testing.assert_allclose(simulated[..., 1], 1.5 * simulated[..., 0], rtol=1e-6, atol=1e-8)
 
 
@@ -140,9 +127,7 @@ def test_gaussian_rejects_a_mismatched_mean_vector():
         mc.simulate_gaussian_returns([0.0, 0.0, 0.0], COV, n_paths=5, horizon=5, seed=1)
 
 
-# --------------------------------------------------------------------------- #
 # Mean vector resolution
-# --------------------------------------------------------------------------- #
 
 def test_zero_drift_produces_a_zero_mean_vector():
     mean = mc.resolve_mean_vector(COV, drift="zero")
@@ -181,9 +166,7 @@ def test_zero_drift_simulation_has_no_expected_growth():
     assert abs(float(simulated.mean())) < 5e-4
 
 
-# --------------------------------------------------------------------------- #
 # Cross-sectional bootstrap
-# --------------------------------------------------------------------------- #
 
 def test_bootstrap_output_shape(panel):
     simulated = mc.simulate_bootstrap_returns(panel, n_paths=9, horizon=4, seed=1)
@@ -198,8 +181,6 @@ def test_every_bootstrapped_day_is_a_real_historical_row(panel):
 
 
 def test_bootstrap_preserves_same_day_cross_asset_dependence(traceable_panel):
-    # B == -A on every historical date; independent per-asset sampling would
-    # break that relationship, whole-row sampling cannot.
     simulated = mc.simulate_bootstrap_returns(traceable_panel, n_paths=40, horizon=15, seed=5)
     np.testing.assert_allclose(simulated[..., 1], -simulated[..., 0], rtol=0, atol=1e-18)
 
@@ -220,12 +201,9 @@ def test_bootstrap_requires_a_usable_history():
         mc.simulate_bootstrap_returns(single, n_paths=5, horizon=5, seed=1)
 
 
-# --------------------------------------------------------------------------- #
 # Block bootstrap
-# --------------------------------------------------------------------------- #
 
 def test_block_bootstrap_returns_the_exact_requested_horizon(traceable_panel):
-    # 7 is not a multiple of 3, so the final block must be truncated.
     simulated = mc.simulate_block_bootstrap_returns(
         traceable_panel, n_paths=12, horizon=7, seed=1, block_length=3
     )
@@ -237,8 +215,6 @@ def test_block_bootstrap_samples_contiguous_historical_blocks(traceable_panel):
     simulated = mc.simulate_block_bootstrap_returns(
         traceable_panel, n_paths=30, horizon=8, seed=6, block_length=block
     )
-    # Asset A equals row_index / 1000, so consecutive days inside one block must
-    # step by exactly 0.001.
     steps = np.diff(simulated[..., 0], axis=1)
     within_block = np.ones(steps.shape[1], dtype=bool)
     within_block[block - 1 :: block] = False  # boundaries between blocks
@@ -285,9 +261,7 @@ def test_block_bootstrap_rejects_an_oversized_block(panel):
         )
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio path engine
-# --------------------------------------------------------------------------- #
 
 def test_asset_returns_map_to_weighted_portfolio_returns():
     asset_paths = np.array([[[0.10, -0.05], [0.00, 0.20]]])  # 1 path, 2 days, 2 assets
@@ -334,9 +308,7 @@ def test_portfolio_paths_validate_shapes_and_values():
         mc.simulated_portfolio_returns(np.zeros((2, 2, 3)), WEIGHTS, ["A", "B"])
 
 
-# --------------------------------------------------------------------------- #
 # Maximum drawdown
-# --------------------------------------------------------------------------- #
 
 def test_monotonically_rising_path_has_zero_drawdown():
     values = np.array([[100.0, 110.0, 120.0, 130.0]])
@@ -349,7 +321,6 @@ def test_monotonically_falling_path_captures_the_full_decline():
 
 
 def test_first_period_loss_is_measured_from_the_starting_value():
-    # The peak is floored at the initial investment, as in Phase 1.
     values = np.array([[100.0, 80.0, 120.0]])
     np.testing.assert_allclose(mc.path_max_drawdowns(values), [-0.20])
 
@@ -386,9 +357,7 @@ def test_drawdown_rejects_a_degenerate_path_array():
         mc.path_max_drawdowns(np.array([[100.0]]))
 
 
-# --------------------------------------------------------------------------- #
 # Ending-value analytics
-# --------------------------------------------------------------------------- #
 
 def test_summary_percentiles_are_exact_for_a_known_set():
     result = _result([-0.20, -0.10, 0.0, 0.10, 0.20], initial_value=1_000_000.0)
@@ -424,14 +393,11 @@ def test_summary_reports_run_configuration():
     assert summary["Starting Portfolio Value"] == pytest.approx(500.0)
 
 
-# --------------------------------------------------------------------------- #
 # Simulated VaR / CVaR
-# --------------------------------------------------------------------------- #
 
 def test_simulated_var_and_cvar_are_exact_for_a_known_sample():
     returns = np.arange(100) / 100.0 - 0.50  # -0.50 ... 0.49
     result = _result(returns)
-    # 5% quantile sits at position 0.05 * 99 = 4.95, between -0.46 and -0.45.
     assert mc.simulated_var(result, 0.95) == pytest.approx(0.4505)
     # Tail is the five observations at or below -0.4505: mean -0.48.
     assert mc.simulated_cvar(result, 0.95) == pytest.approx(0.48)
@@ -449,7 +415,6 @@ def test_simulated_var_is_a_positive_loss_magnitude():
 
 
 def test_simulated_var_can_be_negative_when_the_tail_is_a_gain():
-    # An all-positive outcome distribution has no loss at the 95% level.
     result = _result(np.linspace(0.05, 0.50, 100))
     assert mc.simulated_var(result, 0.95) < 0
 
@@ -480,12 +445,9 @@ def test_horizon_label_identifies_the_measurement_window():
     assert result.horizon_label == "1-Day"
 
 
-# --------------------------------------------------------------------------- #
 # Path-dependent metrics
-# --------------------------------------------------------------------------- #
 
 def test_path_dependent_metrics_on_hand_built_paths():
-    # Path 1: dips 30% then recovers above start. Path 2: rises then ends down.
     # Path 3: flat.
     values = np.array(
         [
@@ -507,7 +469,6 @@ def test_path_dependent_metrics_on_hand_built_paths():
     metrics = mc.path_dependent_metrics(result, loss_threshold=0.10, drawdown_threshold=0.20)
     assert metrics["Probability Ever 10% Below Start"] == pytest.approx(1 / 3)
     assert metrics["Probability of a 20% Drawdown"] == pytest.approx(2 / 3)
-    # Paths 1 and 2 both breach a 10% drawdown; only path 1 ends above start.
     assert metrics["Probability of Recovery After a 10% Drawdown"] == pytest.approx(0.5)
     # Path 2 was up at some point and ended down.
     assert metrics["Probability of Ending Down After Being Up"] == pytest.approx(1 / 3)
@@ -527,9 +488,7 @@ def test_path_dependent_metrics_validate_thresholds():
         mc.path_dependent_metrics(result, drawdown_threshold=1.5)
 
 
-# --------------------------------------------------------------------------- #
 # Drawdown distribution
-# --------------------------------------------------------------------------- #
 
 def test_drawdown_distribution_percentiles_are_severity_ordered():
     simulated = mc.simulate_gaussian_returns([0.0, 0.0], COV, n_paths=500, horizon=60, seed=21)
@@ -553,9 +512,7 @@ def test_drawdown_distribution_percentiles_are_severity_ordered():
     )
 
 
-# --------------------------------------------------------------------------- #
 # Orchestration and comparisons
-# --------------------------------------------------------------------------- #
 
 def test_run_simulation_is_reproducible(panel):
     kwargs = dict(n_paths=50, horizon=20, initial_value=1_000.0, seed=17)
@@ -619,9 +576,7 @@ def test_method_comparison_rejects_an_empty_method_list(panel):
         mc.compare_simulation_methods(WEIGHTS, panel, methods=[])
 
 
-# --------------------------------------------------------------------------- #
 # Stressed regime
-# --------------------------------------------------------------------------- #
 
 def test_higher_covariance_widens_the_outcome_distribution():
     scaled = COV * 4.0  # double every volatility, same correlation and mean
@@ -669,9 +624,7 @@ def test_stressed_covariance_preserves_asset_volatilities(panel):
     )
 
 
-# --------------------------------------------------------------------------- #
 # Regime mixture
-# --------------------------------------------------------------------------- #
 
 def test_mixture_with_zero_probability_matches_the_calm_covariance():
     scaled = COV * 9.0

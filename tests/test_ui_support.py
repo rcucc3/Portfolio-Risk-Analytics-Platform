@@ -1,8 +1,4 @@
-"""Tests for Streamlit presentation helpers.
-
-These cover parsing, mapping and formatting only. They do not render Streamlit
-widgets and they do not call the network.
-"""
+"""Tests for Streamlit presentation helpers."""
 
 from __future__ import annotations
 
@@ -70,8 +66,8 @@ def _returns(n: int = 120) -> pd.DataFrame:
 def test_fmt_pct_money_num_and_missing() -> None:
     assert fmt_pct(0.1234) == "12.34%"
     assert fmt_pct(-0.05, signed=True) == "-5.00%"
-    assert fmt_pct(None) == "—"
-    assert fmt_pct(float("nan")) == "—"
+    assert fmt_pct(None) == "-"
+    assert fmt_pct(float("nan")) == "-"
     assert fmt_money(1_000_000) == "$1,000,000"
     assert fmt_money(-2500, decimals=2) == "-$2,500.00"
     assert fmt_num(1.2345) == "1.23"

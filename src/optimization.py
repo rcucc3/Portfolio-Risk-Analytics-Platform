@@ -1,43 +1,4 @@
-"""Mean-variance portfolio optimization and allocation analytics.
-
-Phases 2 to 4 measure and stress the *given* portfolio. This module asks what
-the allocation should be, and then — just as importantly — how much that answer
-can be trusted.
-
-Frequency convention
---------------------
-Every function here works in **annual** units: expected returns are annualized
-and the covariance matrix must be annualized to match. Mixing an annual return
-vector with a daily covariance would silently scale Sharpe ratios by about 16, so
-the covariance is validated but its frequency cannot be checked programmatically
-and remains the caller's responsibility. :func:`portfolio.covariance_matrix`
-annualizes by default.
-
-Sharpe convention
------------------
-The optimizer's Sharpe ratio is the mean-variance ratio
-``(mu_p - rf) / sigma_p`` computed from the *expected-return vector*, not from a
-realized return series. It therefore will not exactly equal
-:func:`portfolio.sharpe_ratio`, which de-annualizes the risk-free rate
-geometrically and works from daily excess returns. Both are correct for their
-own purpose; they answer different questions and are never compared directly.
-
-Solver discipline
------------------
-Optimizations use ``scipy.optimize.minimize`` with SLSQP and analytic gradients.
-A solver's ``success`` flag is never trusted on its own: every solution is
-independently re-checked against the budget, box and group constraints, and a
-result that violates any of them is reported as a failure with the violation
-listed. Bound violations smaller than ``1e-9`` are floating-point noise from the
-solver and are snapped to the bound before verification; anything larger is a
-genuine failure and is reported as one.
-
-Limitations worth stating in code, not just documentation: mean-variance weights
-are extremely sensitive to the expected-return vector, which is estimated far
-less reliably than the covariance. :func:`expected_return_sensitivity` and
-:func:`shrinkage_comparison` exist specifically to quantify that fragility
-rather than to hide it.
-"""
+"""Portfolio optimization functions."""
 
 from __future__ import annotations
 
@@ -80,32 +41,19 @@ __all__ = [
     "optimization_summary",
 ]
 
-#: Absolute tolerance for independent constraint verification.
+# Constraint check tolerance; snap bound noise below this; Sharpe undefined below this vol.
 CONSTRAINT_TOLERANCE = 1e-6
-
-#: Bound violations below this size are solver rounding and are snapped.
 _SNAP_TOLERANCE = 1e-9
-
-#: Volatility below which a Sharpe ratio is treated as undefined.
 _MIN_VOLATILITY = 1e-12
 
 RETURN_METHODS = ("geometric", "arithmetic", "shrunk")
 
 
-# --------------------------------------------------------------------------- #
 # Constraints
-# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class GroupConstraint:
-    """A minimum and maximum total weight for a group of assets.
-
-    Attributes:
-        name: Sleeve label, e.g. ``"Equities"``.
-        assets: Assets belonging to the sleeve.
-        minimum: Lower bound on the sleeve's total weight.
-        maximum: Upper bound on the sleeve's total weight.
-    """
+    """Min/max total weight for a group of assets."""
 
     name: str
     assets: tuple[str, ...]
@@ -135,20 +83,7 @@ class GroupConstraint:
 
 @dataclass(frozen=True)
 class AllocationConstraints:
-    """Box and group constraints defining the feasible allocation set.
-
-    Portfolios are always fully invested (``sum(w) = 1``). The default bounds are
-    long-only with a per-asset cap, which is what makes mean-variance output
-    usable: an unconstrained maximum-Sharpe solution routinely concentrates in
-    one or two assets.
-
-    Attributes:
-        lower_bound: Default minimum weight per asset.
-        upper_bound: Default maximum weight per asset.
-        asset_bounds: Per-asset ``(lower, upper)`` overrides, e.g.
-            ``{"TLT": (0.05, 0.30)}``.
-        groups: Sleeve exposure constraints.
-    """
+    """Box and group constraints; portfolios fully invested."""
 
     lower_bound: float = config.MIN_ASSET_WEIGHT
     upper_bound: float = config.MAX_ASSET_WEIGHT
@@ -157,17 +92,12 @@ class AllocationConstraints:
 
     @property
     def long_only(self) -> bool:
-        """Whether every bound forbids short positions."""
+        """True if every bound forbids shorts."""
         lows = [self.lower_bound, *(low for low, _ in self.asset_bounds.values())]
         return all(low >= 0.0 for low in lows)
 
     def bounds(self, assets: Sequence[str]) -> pd.DataFrame:
-        """Resolve per-asset ``Lower``/``Upper`` bounds for ``assets``.
-
-        Raises:
-            ValueError: An override names an asset outside the universe, a bound
-                is not finite, or a lower bound exceeds its upper bound.
-        """
+        """Resolve per-asset lower/upper bounds."""
         labels = [str(a) for a in assets]
         unknown = [a for a in self.asset_bounds if str(a) not in labels]
         if unknown:
@@ -190,14 +120,7 @@ class AllocationConstraints:
         return pd.DataFrame({"Lower": lower, "Upper": upper}, index=index)
 
     def validate(self, assets: Sequence[str]) -> pd.DataFrame:
-        """Check that a fully-invested portfolio can satisfy every constraint.
-
-        Infeasible constraint sets raise rather than being quietly relaxed: a
-        silently loosened constraint would make the optimizer's answer a fiction.
-
-        Returns:
-            The resolved bounds, so callers can validate and resolve in one step.
-        """
+        """Check that a fully invested book can satisfy constraints."""
         bounds = self.bounds(assets)
         total_lower = float(bounds["Lower"].sum())
         total_upper = float(bounds["Upper"].sum())
@@ -238,7 +161,6 @@ class AllocationConstraints:
                 group_upper_total += group.maximum
             seen |= set(group.assets)
 
-        # Disjoint groups covering the whole universe must be able to reach 1.0.
         if seen == set(bounds.index) and len(seen) == sum(len(g.assets) for g in self.groups):
             if group_lower > 1.0 + CONSTRAINT_TOLERANCE:
                 raise ValueError(
@@ -252,7 +174,7 @@ class AllocationConstraints:
         return bounds
 
     def violations(self, weights: pd.Series) -> list[str]:
-        """List every constraint the weights breach beyond tolerance."""
+        """List constraint breaches beyond tolerance."""
         bounds = self.bounds(list(weights.index))
         issues = []
         total = float(weights.sum())
@@ -281,12 +203,7 @@ def default_constraints(
     assets: Sequence[str] | None = None,
     use_groups: bool = True,
 ) -> AllocationConstraints:
-    """Build the project's default long-only constraints from ``config``.
-
-    Group limits are applied only to sleeves whose assets are all present in
-    ``assets``, so a narrower universe silently loses a sleeve's constraint
-    rather than raising. Pass ``use_groups=False`` for box constraints only.
-    """
+    """Default long-only box/group constraints from config."""
     if not use_groups:
         return AllocationConstraints()
     labels = None if assets is None else {str(a) for a in assets}
@@ -299,28 +216,12 @@ def default_constraints(
     return AllocationConstraints(groups=tuple(groups))
 
 
-# --------------------------------------------------------------------------- #
 # Expected returns
-# --------------------------------------------------------------------------- #
 
 def shrink_returns(
     mu: pd.Series, alpha: float = config.RETURN_SHRINKAGE_ALPHA, target: float | None = None
 ) -> pd.Series:
-    """Shrink expected returns toward a common target.
-
-    ``mu_shrunk = alpha * mu_asset + (1 - alpha) * target``, with ``target``
-    defaulting to the cross-sectional mean of ``mu``. ``alpha = 1`` leaves the
-    raw estimate untouched; ``alpha = 0`` assigns every asset the target, which
-    makes the maximum-Sharpe portfolio depend on the covariance alone.
-
-    The rationale is that cross-sectional differences in historical mean returns
-    are dominated by estimation noise. Pulling them together is a deliberate
-    admission of that noise, not a forecast. It is intentionally a one-line,
-    inspectable rule rather than a black-box return model.
-
-    Raises:
-        ValueError: ``alpha`` outside ``[0, 1]``, or non-finite inputs.
-    """
+    """Shrink expected returns toward a common target."""
     a = float(alpha)
     if not np.isfinite(a) or not 0.0 <= a <= 1.0:
         raise ValueError(f"alpha must lie in [0, 1]; got {alpha!r}.")
@@ -342,24 +243,7 @@ def expected_returns(
     alpha: float = config.RETURN_SHRINKAGE_ALPHA,
     base: str = "geometric",
 ) -> pd.Series:
-    """Annualized expected return per asset under a stated estimator.
-
-    Args:
-        asset_returns: ``date x asset`` daily simple returns.
-        method: ``"geometric"`` compounds realized growth using the Phase 1
-            convention and is the project default. ``"arithmetic"`` annualizes
-            the daily mean, which is the theoretically consistent input for
-            single-period mean-variance optimization. Per period the arithmetic
-            mean always exceeds the geometric mean, but the annualized figures are
-            not orderable because one is scaled linearly and the other compounds.
-            ``"shrunk"`` applies :func:`shrink_returns` to the ``base`` estimate.
-        periods_per_year: Annualization factor.
-        alpha: Shrinkage intensity used when ``method="shrunk"``.
-        base: Estimator that shrinkage is applied to.
-
-    Returns:
-        Annualized expected returns indexed by asset.
-    """
+    """Annualized expected return per asset."""
     if method not in RETURN_METHODS:
         raise ValueError(f"method must be one of {list(RETURN_METHODS)}; got {method!r}.")
     frame = pf.validate_return_frame(asset_returns)
@@ -374,14 +258,11 @@ def expected_returns(
     return shrink_returns(expected_returns(frame, base, periods_per_year), alpha)
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio metrics
-# --------------------------------------------------------------------------- #
 
 def _align_inputs(
     mu: Mapping[str, float] | pd.Series, covariance: pd.DataFrame
 ) -> tuple[pd.Series, pd.DataFrame]:
-    """Validate an expected-return vector against a covariance matrix."""
     cov = risk.validate_covariance(covariance)
     series = pd.Series(mu, dtype="float64")
     series.index = series.index.map(str)
@@ -400,7 +281,6 @@ def _align_inputs(
 
 
 def _sharpe(expected_return: float, volatility: float, risk_free_rate: float) -> float:
-    """Mean-variance Sharpe ratio, ``nan`` when volatility is effectively zero."""
     if volatility <= _MIN_VOLATILITY:
         return float("nan")
     return (expected_return - risk_free_rate) / volatility
@@ -412,12 +292,7 @@ def portfolio_metrics(
     covariance: pd.DataFrame,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> pd.Series:
-    """Expected return, volatility and Sharpe ratio for arbitrary weights.
-
-    Both ``mu`` and ``covariance`` must be annualized. Volatility comes from
-    :func:`risk.portfolio_volatility`, so there is exactly one implementation of
-    ``sqrt(w' Sigma w)`` in the project.
-    """
+    """Expected return, volatility, and mean-variance Sharpe."""
     expected, cov = _align_inputs(mu, covariance)
     w = pf.validate_weights(weights, assets=list(cov.index))
     expected_return = float((w * expected).sum())
@@ -435,19 +310,7 @@ def concentration_metrics(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
     assets: Sequence[str] | None = None,
 ) -> pd.Series:
-    """Concentration diagnostics that expose mathematically extreme allocations.
-
-    * ``Maximum Weight`` — the largest single-asset position.
-    * ``Herfindahl-Hirschman Index`` — ``sum(w_i^2)``, which equals ``1/n`` for
-      an equal-weight portfolio of ``n`` assets and 1 for a single holding.
-    * ``Effective Number of Holdings`` — ``1 / HHI``, the size of the
-      equal-weight portfolio with the same concentration. A seven-asset portfolio
-      with an effective count of 2.5 is a two-and-a-half-asset bet whatever its
-      nominal breadth.
-
-    HHI is computed on signed weights, so it is only interpretable as
-    concentration for long-only portfolios.
-    """
+    """Max weight, HHI, and effective number of holdings."""
     w = pf.validate_weights(weights, assets=assets)
     hhi = float((w**2).sum())
     return pd.Series(
@@ -464,36 +327,17 @@ def turnover(
     current_weights: Mapping[str, float] | pd.Series | Sequence[float],
     assets: Sequence[str] | None = None,
 ) -> float:
-    """One-way turnover required to move between two allocations.
-
-    ``0.5 * sum(|w_new - w_current|)``. The one-half convention counts the trade
-    once rather than twice, since every sale funds a purchase in a fully-invested
-    portfolio: a result of 0.30 means 30% of the portfolio changes hands, not 60%.
-    """
+    """One-way turnover ``0.5 * sum(|w_new - w_old|)``."""
     target = pf.validate_weights(new_weights, assets=assets)
     current = pf.validate_weights(current_weights, assets=list(target.index))
     return 0.5 * float((target - current).abs().sum())
 
 
-# --------------------------------------------------------------------------- #
 # Solver
-# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class OptimizationResult:
-    """Outcome of one optimization, including independent verification.
-
-    Attributes:
-        objective: Label of the problem solved.
-        weights: Optimized weights indexed by asset.
-        expected_return: Annualized portfolio expected return.
-        volatility: Annualized portfolio volatility.
-        sharpe_ratio: Mean-variance Sharpe ratio.
-        success: ``True`` only when the solver converged *and* the solution
-            passed independent constraint verification.
-        message: Solver message, or the constraint violations found.
-        violations: Constraints breached beyond ``CONSTRAINT_TOLERANCE``.
-    """
+    """One optimization outcome with independent constraint verification."""
 
     objective: str
     weights: pd.Series
@@ -518,7 +362,6 @@ class OptimizationResult:
 
 
 def _budget_constraint() -> dict[str, object]:
-    """Fully-invested equality constraint with its analytic gradient."""
     return {
         "type": "eq",
         "fun": lambda w: float(w.sum() - 1.0),
@@ -529,7 +372,6 @@ def _budget_constraint() -> dict[str, object]:
 def _group_constraints(
     constraints: AllocationConstraints, assets: Sequence[str]
 ) -> list[dict[str, object]]:
-    """Translate group exposure limits into SLSQP inequality constraints."""
     labels = list(assets)
     built: list[dict[str, object]] = []
     for group in constraints.groups:
@@ -554,12 +396,6 @@ def _group_constraints(
 
 
 def _feasible_start(bounds: pd.DataFrame) -> np.ndarray:
-    """Box-feasible, fully-invested starting point.
-
-    Assets begin at their lower bounds and the remaining budget is distributed in
-    proportion to each asset's headroom, which keeps the start inside the box for
-    any feasible bound set.
-    """
     lower = bounds["Lower"].to_numpy(dtype="float64")
     upper = bounds["Upper"].to_numpy(dtype="float64")
     headroom = upper - lower
@@ -571,11 +407,6 @@ def _feasible_start(bounds: pd.DataFrame) -> np.ndarray:
 
 
 def _greedy_start(bounds: pd.DataFrame, scores: np.ndarray) -> np.ndarray:
-    """Fully-invested start that loads the highest-scoring assets first.
-
-    Gives the multi-start search a corner-like point, which is where
-    maximum-Sharpe solutions usually live under a per-asset cap.
-    """
     lower = bounds["Lower"].to_numpy(dtype="float64")
     upper = bounds["Upper"].to_numpy(dtype="float64")
     weights = lower.copy()
@@ -596,11 +427,6 @@ def _solve(
     constraint_list: list[dict[str, object]],
     starts: list[np.ndarray],
 ) -> tuple[np.ndarray | None, bool, str]:
-    """Run SLSQP from several starting points and keep the best objective value.
-
-    Multiple starts matter for the Sharpe objective, which is not convex: a
-    single start can settle on a local optimum that a different start beats.
-    """
     box = list(zip(bounds["Lower"], bounds["Upper"]))
     best: np.ndarray | None = None
     best_value = np.inf
@@ -636,7 +462,6 @@ def _finalize(
     risk_free_rate: float,
     extra_checks: list[str] | None = None,
 ) -> OptimizationResult:
-    """Snap solver rounding, verify constraints independently, and package up."""
     if raw is None:
         empty = pd.Series(np.nan, index=cov.index, name="Weight")
         return OptimizationResult(
@@ -645,9 +470,6 @@ def _finalize(
         )
 
     snapped = np.clip(raw, bounds["Lower"].to_numpy(), bounds["Upper"].to_numpy())
-    # Accept the snap only when it moved nothing materially. A large move means
-    # the solver genuinely left the feasible box, which must be reported rather
-    # than repaired.
     if np.abs(snapped - raw).max() <= _SNAP_TOLERANCE:
         raw = snapped
     total = float(raw.sum())
@@ -678,17 +500,7 @@ def minimum_volatility(
     constraints: AllocationConstraints | None = None,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> OptimizationResult:
-    """Minimize ``w' Sigma w`` subject to full investment and allocation limits.
-
-    The expected-return vector is optional and does not affect the weights at
-    all: minimum-volatility optimization uses only the covariance matrix. Supply
-    ``mu`` when you want the reported expected return and Sharpe ratio to be
-    populated; omit it and those fields are zero-drift figures.
-
-    Returns:
-        An :class:`OptimizationResult` whose ``success`` flag reflects both
-        solver convergence and independent constraint verification.
-    """
+    """Minimize ``w' Sigma w`` under full investment and limits."""
     cov = risk.validate_covariance(covariance)
     expected = (
         pd.Series(0.0, index=cov.index, name="Expected Return")
@@ -719,17 +531,7 @@ def maximum_sharpe(
     constraints: AllocationConstraints | None = None,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> OptimizationResult:
-    """Maximize ``(w'mu - rf) / sqrt(w' Sigma w)`` subject to the constraints.
-
-    Implemented as minimization of the negative ratio with an analytic gradient.
-    Because the objective is not convex, the solver is started from several
-    feasible points — an even spread, a covariance-tilted point and a
-    return-greedy corner — and the best verified solution is returned.
-
-    Near-zero volatility is handled by returning a large penalty rather than
-    dividing by zero, so a degenerate covariance cannot produce an infinite
-    Sharpe ratio.
-    """
+    """Maximize mean-variance Sharpe under the constraints."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     bounds = limits.validate(list(cov.index))
@@ -775,17 +577,7 @@ def target_return_portfolio(
     constraints: AllocationConstraints | None = None,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> OptimizationResult:
-    """Minimize volatility subject to an **exact** expected return.
-
-    The target is imposed as an equality (``w'mu == target``), which is the
-    correct formulation for tracing an efficient frontier: an inequality would
-    collapse every below-minimum-variance target onto the same portfolio and hide
-    the shape of the curve. Consequently a target outside the feasible range is
-    rejected rather than being met approximately.
-
-    Raises:
-        ValueError: The target lies outside the feasible expected-return range.
-    """
+    """Minimize volatility subject to an exact expected return."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     bounds = limits.validate(list(cov.index))
@@ -830,12 +622,7 @@ def feasible_return_range(
     covariance: pd.DataFrame,
     constraints: AllocationConstraints | None = None,
 ) -> tuple[float, float]:
-    """Lowest and highest expected return attainable under the constraints.
-
-    Both endpoints are found by optimizing the linear objective ``w'mu`` over the
-    feasible set, so they respect box and group limits rather than assuming the
-    extremes are single-asset portfolios.
-    """
+    """Lowest and highest expected return under the constraints."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     bounds = limits.validate(list(cov.index))
@@ -863,21 +650,7 @@ def efficient_frontier(
     n_points: int = config.FRONTIER_POINTS,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Trace the constrained efficient frontier.
-
-    Targets span from the minimum-volatility portfolio's expected return to the
-    highest feasible return, since portfolios below the minimum-volatility return
-    are dominated and not part of the efficient set.
-
-    Failed points are retained with ``Success = False`` rather than dropped, so a
-    frontier that could not be solved is visible instead of appearing as a
-    shorter but healthy curve.
-
-    Returns:
-        ``(summary, weights)`` where ``summary`` is indexed by point and holds
-        ``Target Return``, ``Volatility``, ``Sharpe Ratio`` and ``Success``, and
-        ``weights`` holds one row of asset weights per point.
-    """
+    """Trace the constrained efficient frontier."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     points = int(n_points)
@@ -918,11 +691,7 @@ def efficient_frontier(
 
 
 def frontier_highlights(summary: pd.DataFrame) -> pd.DataFrame:
-    """Representative frontier points: minimum risk, quartile targets, maximum.
-
-    Reporting five labelled points keeps a frontier readable in a terminal or a
-    KPI panel without printing every solved portfolio.
-    """
+    """Representative frontier points (min, quartiles, max)."""
     if summary.empty:
         raise ValueError("Frontier summary is empty.")
     positions = {
@@ -939,9 +708,7 @@ def frontier_highlights(summary: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio comparison
-# --------------------------------------------------------------------------- #
 
 def compare_portfolios(
     portfolios: Mapping[str, Mapping[str, float] | pd.Series],
@@ -950,19 +717,7 @@ def compare_portfolios(
     current_weights: Mapping[str, float] | pd.Series | None = None,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> pd.DataFrame:
-    """Compare allocations on return, risk, concentration and turnover.
-
-    Args:
-        portfolios: Named allocations, e.g. ``{"Current": ..., "Min Vol": ...}``.
-        mu: Annualized expected returns.
-        covariance: Annualized covariance matrix.
-        current_weights: Baseline for turnover. Defaults to the entry named
-            ``"Current"`` when present, otherwise turnover is omitted.
-        risk_free_rate: Annual risk-free rate for the Sharpe ratio.
-
-    Returns:
-        DataFrame indexed by portfolio name.
-    """
+    """Compare allocations on return, risk, concentration, turnover."""
     if not portfolios:
         raise ValueError("At least one portfolio is required.")
     expected, cov = _align_inputs(mu, covariance)
@@ -993,10 +748,7 @@ def weight_comparison_table(
     assets: Sequence[str] | None = None,
     baseline: str = "Current",
 ) -> pd.DataFrame:
-    """Asset-level weight comparison with differences against a baseline.
-
-    Values are unrounded; formatting belongs to the presentation layer.
-    """
+    """Asset-level weight comparison versus a baseline."""
     if not portfolios:
         raise ValueError("At least one portfolio is required.")
     labels = list(assets) if assets is not None else None
@@ -1015,9 +767,7 @@ def weight_comparison_table(
     return table
 
 
-# --------------------------------------------------------------------------- #
 # Model risk: sensitivity and shrinkage
-# --------------------------------------------------------------------------- #
 
 def expected_return_sensitivity(
     mu: Mapping[str, float] | pd.Series,
@@ -1026,23 +776,7 @@ def expected_return_sensitivity(
     shifts: Sequence[float] = config.SENSITIVITY_SHIFTS,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> pd.DataFrame:
-    """Re-optimize maximum Sharpe after perturbing one asset's expected return.
-
-    For every asset and every shift, that asset's expected return is moved by the
-    shift (in annual return terms), the maximum-Sharpe problem is re-solved, and
-    the turnover from the unperturbed optimum is recorded.
-
-    This is the most important diagnostic in the module. A one-percentage-point
-    change in a single expected return is far smaller than the standard error of
-    a historical mean estimate, so large turnover here means the "optimal"
-    weights are an artefact of estimation noise rather than a reliable
-    conclusion.
-
-    Returns:
-        DataFrame with one row per (asset, shift), reporting the re-optimized
-        Sharpe ratio, the asset's new weight, turnover from the baseline optimum
-        and the maximum absolute weight change.
-    """
+    """Max-Sharpe re-opt after perturbing one asset's expected return."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     baseline = maximum_sharpe(expected, cov, limits, risk_free_rate)
@@ -1084,18 +818,7 @@ def shrinkage_comparison(
     risk_free_rate: float = config.RISK_FREE_RATE,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.DataFrame:
-    """Compare maximum-Sharpe allocations across expected-return estimators.
-
-    The minimum-volatility portfolio is included as a control. Because it uses
-    only the covariance matrix, its row is identical for every estimator, which
-    demonstrates directly that expected-return model risk is confined to the
-    return-seeking optimization.
-
-    Returns:
-        DataFrame indexed by estimator, reporting the optimized expected return,
-        volatility, Sharpe ratio, concentration and turnover from the current
-        portfolio.
-    """
+    """Max-Sharpe across expected-return estimators."""
     frame = pf.validate_return_frame(asset_returns)
     cov = risk.validate_covariance(covariance)
     limits = constraints or default_constraints(list(cov.index))
@@ -1107,8 +830,6 @@ def shrinkage_comparison(
             ("Max Sharpe", maximum_sharpe(mu, cov, limits, risk_free_rate)),
             ("Min Volatility", minimum_volatility(cov, mu, limits, risk_free_rate)),
         ):
-            # A failed solve reports NaN diagnostics rather than statistics
-            # computed from meaningless weights.
             concentration = (
                 concentration_metrics(result.weights)
                 if result.success
@@ -1132,9 +853,7 @@ def shrinkage_comparison(
     return table
 
 
-# --------------------------------------------------------------------------- #
-# Integration with the risk, stress and simulation engines
-# --------------------------------------------------------------------------- #
+# Engine integrations
 
 def optimized_risk_comparison(
     portfolios: Mapping[str, Mapping[str, float] | pd.Series],
@@ -1143,19 +862,7 @@ def optimized_risk_comparison(
     confidence: float = config.VAR_CONFIDENCE_95,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.DataFrame:
-    """Phase 2 risk metrics for each allocation, from its own return history.
-
-    Historical VaR and CVaR are computed by applying each set of weights to the
-    historical asset-return matrix and measuring the resulting portfolio series
-    directly. They are never obtained by scaling the current portfolio's VaR,
-    which would assume the optimized portfolio has the same return distribution
-    shape and would defeat the purpose of the comparison.
-
-    Returns:
-        DataFrame indexed by portfolio with annualized volatility, the
-        diversification ratio, one-day historical VaR and CVaR, and the largest
-        risk contributor with its share.
-    """
+    """Historical risk metrics for each allocation."""
     frame = pf.validate_return_frame(asset_returns)
     annual_cov = (
         pf.covariance_matrix(frame, annualize=True, periods_per_year=periods_per_year)
@@ -1188,16 +895,7 @@ def optimized_stress_comparison(
     portfolio_value: float = config.DEFAULT_PORTFOLIO_VALUE,
     assets: Sequence[str] | None = None,
 ) -> pd.DataFrame:
-    """Run Phase 3 scenarios across several allocations.
-
-    Uses :func:`stress.stress_portfolio_return` rather than reimplementing the
-    shock algebra, so a scenario return here is exactly the weighted sum of asset
-    shocks the stress engine would report.
-
-    Returns:
-        DataFrame indexed by scenario with one return column per portfolio and a
-        dollar P&L column per portfolio.
-    """
+    """Scenario returns and P&L across allocations."""
     if not scenarios:
         raise ValueError("At least one scenario is required.")
     value = float(portfolio_value)
@@ -1225,13 +923,7 @@ def optimized_simulation_comparison(
     seed: int | None = config.MONTE_CARLO_SEED,
     confidence: float = config.VAR_CONFIDENCE_95,
 ) -> pd.DataFrame:
-    """Simulate each allocation under identical Phase 4 settings.
-
-    Every portfolio shares one path count, horizon and seed, so the comparison
-    isolates the effect of the weights. The default path count is lower than the
-    headline Phase 4 run because three portfolios are simulated; sampling error
-    is correspondingly larger and small differences should not be over-read.
-    """
+    """Monte Carlo comparison under identical settings."""
     frame = pf.validate_return_frame(asset_returns)
     rows = {}
     for name, weights in portfolios.items():
@@ -1266,13 +958,7 @@ def optimization_summary(
     constraints: AllocationConstraints | None = None,
     risk_free_rate: float = config.RISK_FREE_RATE,
 ) -> pd.Series:
-    """Headline optimization comparison with stable keys for dashboard KPI cards.
-
-    Returns:
-        Series covering the current, minimum-volatility and maximum-Sharpe
-        portfolios' return, volatility and Sharpe ratio, their effective holdings,
-        and the turnover required to reach each optimized allocation.
-    """
+    """Headline current vs optimized allocation metrics."""
     expected, cov = _align_inputs(mu, covariance)
     limits = constraints or default_constraints(list(cov.index))
     current = pf.validate_weights(current_weights, assets=list(cov.index))

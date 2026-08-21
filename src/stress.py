@@ -1,33 +1,4 @@
-"""Stress testing and scenario analysis engine.
-
-This module answers a different question from the Phase 2 risk engine. Value at
-Risk and Expected Shortfall are *statistical* statements about a return
-distribution; the tools here are *conditional* statements of the form "if these
-asset moves occur, this is the loss and this is where it comes from". Neither
-assigns a probability to a scenario, and a scenario is an assumption rather than
-a forecast.
-
-Three distinct capabilities live here and are deliberately not mixed:
-
-Deterministic scenario P&L
-    A vector of asset shocks is applied to the portfolio to produce a loss and a
-    full asset-level attribution.
-Historical event identification and calibration
-    Realized worst windows are located in the data and converted into
-    cross-sectionally consistent scenarios, so shocks reflect moves that actually
-    occurred together on the same dates.
-Correlation / covariance stress
-    A separate analytical tool that asks how portfolio *volatility* changes when
-    diversification weakens. It never feeds the deterministic P&L path.
-
-Conventions
------------
-Shocks are simple returns over the scenario horizon (``-0.20`` is a 20% loss).
-The portfolio stress return is ``sum_i w_i * s_i``: weights are the pre-shock
-allocation and no rebalancing happens inside the scenario. Positive outcomes are
-never suppressed, so an asset that gains during a sell-off shows a positive P&L
-and a negative contribution to the loss.
-"""
+"""Scenario stress-testing utilities."""
 
 from __future__ import annotations
 
@@ -61,34 +32,16 @@ __all__ = [
     "stress_summary",
 ]
 
-#: Tolerance for treating a computed quantity as exactly zero.
+# Numerical zero and PSD-repair eigenvalue floor.
 _ZERO_TOLERANCE = 1e-15
-
-#: Smallest eigenvalue tolerated before a PSD repair is applied.
 _PSD_TOLERANCE = 1e-12
 
 
-# --------------------------------------------------------------------------- #
 # Scenario data model
-# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class Scenario:
-    """A named set of deterministic asset shocks expressed as simple returns.
-
-    Attributes:
-        name: Human-readable scenario label.
-        shocks: Asset-to-shock mapping, e.g. ``{"SPY": -0.20}``. Ticker keys are
-            upper-cased and stripped; duplicates after normalization are rejected.
-        description: Economic intuition behind the scenario.
-        category: Optional grouping such as ``"Equity"`` or ``"Rates"``.
-        source: Optional provenance or calibration note.
-
-    Raises:
-        ValueError: Empty name, non-finite shock, duplicate asset, or a shock
-            below -100% (which would imply more than a total loss on a long
-            unlevered position).
-    """
+    """Named deterministic asset shocks as simple returns."""
 
     name: str
     shocks: Mapping[str, float]
@@ -127,35 +80,22 @@ class Scenario:
 
     @property
     def assets(self) -> list[str]:
-        """Assets explicitly shocked by this scenario."""
+        """Assets explicitly shocked."""
         return list(self.shocks)
 
     def as_series(self) -> pd.Series:
-        """Shocks as a float Series indexed by asset."""
+        """Shocks as a float Series."""
         return pd.Series(self.shocks, dtype="float64").rename(self.name)
 
     def restricted_to(self, assets: Iterable[str]) -> "Scenario":
-        """Return a copy keeping only shocks for ``assets``.
-
-        Used to adapt a library scenario to a narrower universe. This is an
-        explicit operation precisely so that dropping shocks is never silent.
-        """
+        """Copy keeping only shocks for the given assets."""
         labels = {str(a).strip().upper() for a in assets}
         return replace(self, shocks={k: v for k, v in self.shocks.items() if k in labels})
 
 
 @dataclass(frozen=True)
 class HistoricalEvent:
-    """A realized worst-case window for the portfolio.
-
-    Attributes:
-        horizon: Window length in trading days.
-        start_date: First date in the window.
-        end_date: Last date in the window.
-        portfolio_return: Realized compounded return of the daily-rebalanced
-            portfolio across the window. This is the truthful figure.
-        asset_returns: Each asset's compounded return over the *same* window.
-    """
+    """Worst realized portfolio window with co-dated asset returns."""
 
     horizon: int
     start_date: pd.Timestamp
@@ -166,28 +106,16 @@ class HistoricalEvent:
 
     @property
     def weighted_asset_return(self) -> float:
-        """Linear ``sum_i w_i * R_i`` using the window's compounded asset returns."""
+        """Linear ``sum_i w_i * R_i`` over the window."""
         return float((self.weights * self.asset_returns.reindex(self.weights.index)).sum())
 
     @property
     def compounding_residual(self) -> float:
-        """Realized compounded return minus its linear scenario approximation.
-
-        For a multi-day window the daily-rebalanced portfolio return is
-        ``prod_t (1 + sum_i w_i r_i,t) - 1``, which is not equal to
-        ``sum_i w_i * R_i`` where ``R_i`` is asset ``i``'s compounded return. The
-        gap is the compounding/rebalancing cross term and is exactly zero at a
-        one-day horizon.
-        """
+        """Compounded portfolio return minus linear ``sum w_i R_i`` (zero at 1-day)."""
         return self.portfolio_return - self.weighted_asset_return
 
     def as_scenario(self) -> Scenario:
-        """Convert the event into a deterministic scenario.
-
-        The resulting scenario applies the window's compounded asset returns as a
-        single shock, so feeding it through the linear P&L engine reproduces
-        :attr:`weighted_asset_return` rather than :attr:`portfolio_return`.
-        """
+        """Convert window asset returns into a deterministic scenario."""
         return Scenario(
             name=f"Historical worst {self.horizon}-day period",
             shocks=self.asset_returns.to_dict(),
@@ -201,9 +129,7 @@ class HistoricalEvent:
         )
 
 
-# --------------------------------------------------------------------------- #
 # Predefined scenario library
-# --------------------------------------------------------------------------- #
 
 _ASSUMPTION_NOTE = (
     "Analyst-specified scenario assumption for the default ETF universe. "
@@ -370,11 +296,7 @@ PREDEFINED_SCENARIOS: tuple[Scenario, ...] = (
 
 
 def get_scenario(name: str) -> Scenario:
-    """Look up a predefined scenario by name (case-insensitive).
-
-    Raises:
-        KeyError: No scenario matches ``name``.
-    """
+    """Look up a predefined scenario by name."""
     key = str(name).strip().casefold()
     for scenario in PREDEFINED_SCENARIOS:
         if scenario.name.casefold() == key:
@@ -384,12 +306,9 @@ def get_scenario(name: str) -> Scenario:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Deterministic stress engine
-# --------------------------------------------------------------------------- #
 
 def _validate_portfolio_value(portfolio_value: float) -> float:
-    """Validate a starting portfolio value: finite and strictly positive."""
     value = float(portfolio_value)
     if not np.isfinite(value):
         raise ValueError(f"Portfolio value must be finite; got {portfolio_value!r}.")
@@ -403,23 +322,7 @@ def scenario_shock_vector(
     assets: Iterable[str],
     missing: str = "zero",
 ) -> pd.Series:
-    """Align a scenario's shocks to the portfolio universe.
-
-    Args:
-        scenario: Scenario to align.
-        assets: Portfolio asset labels, in the order to return.
-        missing: Policy for portfolio assets the scenario does not mention.
-            ``"zero"`` (default) treats them as unshocked, which is the standard
-            partial-scenario convention and is reported in the shock column as
-            ``0.00``. ``"error"`` requires the scenario to cover every asset.
-
-    Returns:
-        Float Series of shocks indexed by ``assets``.
-
-    Raises:
-        ValueError: Unknown policy, a scenario shock for an asset outside the
-            portfolio, or (under ``"error"``) an uncovered portfolio asset.
-    """
+    """Align scenario shocks to the portfolio universe."""
     if missing not in {"zero", "error"}:
         raise ValueError(f"missing must be 'zero' or 'error'; got {missing!r}.")
     labels = [str(a) for a in assets]
@@ -440,7 +343,6 @@ def scenario_shock_vector(
         raise ValueError(
             f"Scenario {scenario.name!r} does not cover portfolio asset(s): {uncovered}."
         )
-    # The caller's original labels are preserved so the result aligns with weights.
     return pd.Series(
         [scenario.shocks.get(asset, 0.0) for asset in normalized],
         index=pd.Index(labels, name="Asset"),
@@ -454,11 +356,7 @@ def stress_portfolio_return(
     scenario: Scenario,
     missing: str = "zero",
 ) -> float:
-    """Portfolio return under a scenario: ``sum_i w_i * s_i``.
-
-    Weights are the pre-shock allocation and are held fixed, so the scenario is
-    applied without intra-scenario rebalancing.
-    """
+    """Portfolio stress return ``sum_i w_i * s_i`` with fixed weights."""
     w = pf.validate_weights(weights)
     shocks = scenario_shock_vector(scenario, w.index, missing)
     return float((w * shocks).sum())
@@ -471,28 +369,7 @@ def stress_pnl_table(
     missing: str = "zero",
     sort_by_loss: bool = True,
 ) -> pd.DataFrame:
-    """Asset-level profit and loss attribution for one scenario.
-
-    Columns:
-        ``Weight``, ``Scenario Shock``, ``Starting Allocation``, ``Stress P&L``,
-        ``Contribution to Portfolio P&L %``, ``Contribution to Total Loss %``.
-
-    ``Contribution to Portfolio P&L %`` is ``pnl_i / total_pnl``: a signed share
-    of the net outcome that sums to 1, and is ``NaN`` when the net P&L is zero.
-
-    ``Contribution to Total Loss %`` is ``pnl_i / gross_loss``, where
-    ``gross_loss`` is the sum of the negative asset P&L only. Losing assets take
-    positive shares summing to 1 among themselves; a hedging asset takes a
-    negative share showing the fraction of the gross loss it offset. It is
-    ``NaN`` when no asset loses. Values are never made positive for presentation.
-
-    Args:
-        weights: Portfolio weights.
-        scenario: Scenario to apply.
-        portfolio_value: Starting portfolio value; must be positive.
-        missing: Missing-asset policy, see :func:`scenario_shock_vector`.
-        sort_by_loss: Sort by ``Stress P&L`` ascending, largest loss first.
-    """
+    """Asset-level P&L attribution for one scenario."""
     w = pf.validate_weights(weights)
     value = _validate_portfolio_value(portfolio_value)
     shocks = scenario_shock_vector(scenario, w.index, missing)
@@ -526,15 +403,7 @@ def stress_scenario(
     portfolio_value: float = config.DEFAULT_PORTFOLIO_VALUE,
     missing: str = "zero",
 ) -> pd.Series:
-    """Scenario-level result for one deterministic stress scenario.
-
-    Returns:
-        Series with the scenario label and category, the portfolio stress return,
-        starting value, P&L, stressed value, and the largest loss contributor and
-        largest offsetting position with their P&L. Contributor fields are
-        missing (``None``, and ``NaN`` for the paired P&L) when no asset loses or
-        no asset gains in the scenario; test them with ``pandas.isna``.
-    """
+    """Scenario-level stress result for one deterministic scenario."""
     table = stress_pnl_table(weights, scenario, portfolio_value, missing, sort_by_loss=True)
     value = _validate_portfolio_value(portfolio_value)
     stress_return = float((table["Weight"] * table["Scenario Shock"]).sum())
@@ -572,16 +441,7 @@ def compare_scenarios(
     portfolio_value: float = config.DEFAULT_PORTFOLIO_VALUE,
     missing: str = "zero",
 ) -> pd.DataFrame:
-    """Run several scenarios and rank them worst to best.
-
-    Returns:
-        DataFrame indexed by scenario name with ``Category``,
-        ``Portfolio Stress Return``, ``Dollar P&L``, ``Stressed Portfolio Value``,
-        ``Largest Loss Contributor`` and ``Largest Hedge / Offset``, sorted
-        ascending by stress return so the worst scenario is first. Contributor
-        cells hold a pandas missing value when a scenario has no losing (or no
-        gaining) asset; test them with ``pandas.isna``.
-    """
+    """Run scenarios and rank worst to best by stress return."""
     if not len(scenarios):
         raise ValueError("At least one scenario is required.")
     rows = [
@@ -603,14 +463,11 @@ def compare_scenarios(
     return table[columns].sort_values("Portfolio Stress Return")
 
 
-# --------------------------------------------------------------------------- #
 # Historical calibration
-# --------------------------------------------------------------------------- #
 
 def _compounded_window_returns(
     asset_returns: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
 ) -> pd.Series:
-    """Compounded return of every asset across one inclusive date window."""
     window = asset_returns.loc[start:end]
     return ((1.0 + window).prod() - 1.0).rename("Asset Return")
 
@@ -620,23 +477,7 @@ def historical_asset_shocks(
     horizon: int = 1,
     percentile: float | None = None,
 ) -> pd.Series:
-    """Per-asset shock magnitudes calibrated from realized returns.
-
-    Each asset is evaluated independently, so the resulting vector generally
-    combines moves that never happened on the same dates. Use it to size the
-    magnitude of a hypothetical shock, and use
-    :func:`historical_joint_scenario` when cross-asset consistency matters.
-
-    Args:
-        asset_returns: ``date x asset`` daily simple returns.
-        horizon: Compounding window in trading days.
-        percentile: ``None`` (default) returns each asset's worst compounded
-            window. Otherwise a value in ``(0, 1)`` returns that empirical
-            quantile, e.g. ``0.01`` for the 1st percentile.
-
-    Returns:
-        Series of shocks indexed by asset, in simple-return units.
-    """
+    """Per-asset shocks from independent historical windows."""
     frame = pf.validate_return_frame(asset_returns)
     shocks = {}
     for asset in frame.columns:
@@ -656,17 +497,7 @@ def worst_historical_event(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
     horizon: int = 1,
 ) -> HistoricalEvent:
-    """Locate the portfolio's worst compounded window of a given length.
-
-    The window is selected on the *portfolio* return series, then every asset's
-    compounded return is measured over that identical window, preserving the
-    cross-sectional relationships that actually occurred. Windows are dated at
-    their end and drawn entirely from realized data, so no look-ahead is
-    introduced.
-
-    Raises:
-        ValueError: Invalid horizon, or a horizon longer than the sample.
-    """
+    """Portfolio's worst compounded window of a given length."""
     frame = pf.validate_return_frame(asset_returns)
     w = pf.validate_weights(weights, assets=frame.columns)
     portfolio = pf.portfolio_returns(frame, w)
@@ -690,12 +521,7 @@ def historical_joint_scenario(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
     horizon: int = 1,
 ) -> Scenario:
-    """Build a scenario from the portfolio's worst realized window.
-
-    All asset shocks come from the same dates, which avoids the impossible
-    combination produced by stitching together each asset's independent worst
-    day.
-    """
+    """Scenario from the portfolio's worst co-dated window."""
     return worst_historical_event(asset_returns, weights, horizon).as_scenario()
 
 
@@ -704,14 +530,7 @@ def historical_stress_events(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
     horizons: Sequence[int] = config.HISTORICAL_EVENT_HORIZONS,
 ) -> pd.DataFrame:
-    """Summarize the portfolio's worst realized windows at several horizons.
-
-    Returns:
-        DataFrame indexed by horizon label with the window dates, the realized
-        compounded portfolio return, the linear ``sum w_i R_i`` approximation and
-        the resulting compounding residual, the largest loss contributor and its
-        share of the window's gross loss, and the worst single asset.
-    """
+    """Worst realized windows at several horizons."""
     if not len(horizons):
         raise ValueError("At least one horizon is required.")
     rows: list[dict[str, object]] = []
@@ -737,9 +556,7 @@ def historical_stress_events(
     return pd.DataFrame(rows, index=pd.Index(index, name="Horizon"))
 
 
-# --------------------------------------------------------------------------- #
 # Reverse stress testing
-# --------------------------------------------------------------------------- #
 
 def reverse_stress_shock(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
@@ -747,36 +564,7 @@ def reverse_stress_shock(
     target_return: float,
     fixed_shocks: Mapping[str, float] | None = None,
 ) -> pd.Series:
-    """Solve for the uniform shock that produces a target portfolio return.
-
-    The portfolio stress return is linear in the shocks,
-    ``target = sum_fixed w_j f_j + x * sum_group w_i``, so the required shock has
-    the closed form
-
-    ``x = (target - fixed_contribution) / combined_group_weight``
-
-    with no numerical optimization. Passing a single ticker solves the
-    single-asset case; passing several solves the grouped case in which every
-    named asset moves by the same amount. Assets that are neither shocked nor
-    listed in ``fixed_shocks`` are assumed unchanged.
-
-    Args:
-        weights: Portfolio weights.
-        shocked_assets: One ticker or a sequence of tickers to solve for.
-        target_return: Desired portfolio return, e.g. ``-0.10`` for a 10% loss.
-        fixed_shocks: Optional shocks held constant for other assets.
-
-    Returns:
-        Series describing the solution, including ``Required Shock``, whether it
-        is ``Feasible`` (not below -100%), and ``Implied Portfolio Return``
-        obtained by substituting the solution back into the portfolio, which
-        reproduces the target whenever the problem is feasible.
-
-    Raises:
-        ValueError: Unknown or duplicated assets, a non-finite target, overlap
-            between shocked and fixed assets, or a combined group weight of zero
-            (in which case no shock can move the portfolio).
-    """
+    """Uniform shock that hits a target portfolio return."""
     w = pf.validate_weights(weights)
     target = float(target_return)
     if not np.isfinite(target):
@@ -836,12 +624,9 @@ def reverse_stress_shock(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Correlation / covariance stress
-# --------------------------------------------------------------------------- #
 
 def _correlation_from_covariance(cov: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """Split a covariance matrix into a correlation matrix and volatilities."""
     volatility = pd.Series(np.sqrt(np.diag(cov.to_numpy())), index=cov.index)
     if (volatility <= 0).any():
         raise ValueError(
@@ -855,17 +640,7 @@ def _correlation_from_covariance(cov: pd.DataFrame) -> tuple[pd.DataFrame, pd.Se
 
 
 def _nearest_psd_correlation(correlation: np.ndarray) -> tuple[np.ndarray, bool]:
-    """Project a symmetric matrix onto the PSD cone and renormalize the diagonal.
-
-    Negative eigenvalues are clipped to zero and the matrix is rebuilt from the
-    remaining spectrum, then rescaled so the diagonal is exactly one. This is the
-    standard spectral projection; it is simpler than Higham's alternating
-    projection and is sufficient here because the input is a small perturbation
-    of a valid correlation matrix.
-
-    Returns:
-        The corrected matrix and a flag indicating whether a repair was needed.
-    """
+    """Project correlation onto the PSD cone; renormalize diagonal."""
     eigenvalues, eigenvectors = np.linalg.eigh(correlation)
     if eigenvalues.min() >= -_PSD_TOLERANCE:
         return correlation, False
@@ -884,7 +659,6 @@ def _stressed_covariance(
     assets: Sequence[str] | None,
     intensity: float,
 ) -> tuple[pd.DataFrame, list[str], bool]:
-    """Core correlation stress; also reports the selection and the repair flag."""
     cov = risk.validate_covariance(covariance)
     target = float(target_correlation)
     if not np.isfinite(target) or not -1.0 <= target <= 1.0:
@@ -934,32 +708,7 @@ def stress_correlations(
     assets: Sequence[str] | None = None,
     intensity: float = 1.0,
 ) -> pd.DataFrame:
-    """Rebuild a covariance matrix with correlations pushed toward a target.
-
-    Each asset's own volatility is preserved exactly: the matrix is decomposed
-    into ``Sigma = D C D``, only the off-diagonal correlations are moved, and the
-    same ``D`` is reapplied. Selected pairs are blended toward the target,
-
-    ``C'_ij = C_ij + intensity * (target - C_ij)``,
-
-    which is a convex combination for ``intensity`` in ``[0, 1]`` and leaves
-    correlations inside ``[-1, 1]``. When only a subset of assets is stressed the
-    result is not guaranteed positive semi-definite, so the correlation matrix is
-    checked and, if necessary, repaired by :func:`_nearest_psd_correlation`
-    before the volatilities are reapplied.
-
-    Args:
-        covariance: Baseline covariance matrix at any frequency.
-        target_correlation: Correlation the selected pairs move toward, in
-            ``[-1, 1]``.
-        assets: Assets whose mutual correlations are stressed. ``None`` stresses
-            every pair. Pairs involving an unlisted asset are left unchanged.
-        intensity: Fraction of the distance to the target to travel, in
-            ``[0, 1]``. ``1.0`` sets the selected pairs exactly to the target.
-
-    Returns:
-        Stressed covariance matrix with the same labels, ordering and diagonal.
-    """
+    """Rebuild covariance with correlations pushed toward a target (vols preserved)."""
     stressed, _, _ = _stressed_covariance(covariance, target_correlation, assets, intensity)
     return stressed
 
@@ -973,17 +722,7 @@ def correlation_stress_report(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Compare portfolio risk before and after a correlation stress.
-
-    This is a statement about *volatility*, not about scenario P&L: it answers
-    "how much risk was being supplied by diversification that could disappear".
-
-    Returns:
-        Series with baseline and stressed portfolio volatility, the percentage
-        increase, baseline and stressed diversification ratios, the average
-        stressed-pair correlation before and after, and whether a PSD repair was
-        applied.
-    """
+    """Volatility impact of a correlation stress (not scenario P&L)."""
     cov = risk.validate_covariance(covariance)
     stressed, labels, repaired = _stressed_covariance(
         cov, target_correlation, assets, intensity
@@ -1001,7 +740,6 @@ def correlation_stress_report(
     pairs = np.triu(np.ones((len(labels), len(labels)), dtype=bool), k=1)
 
     def average(matrix: pd.DataFrame) -> float:
-        """Mean correlation across the unique stressed pairs."""
         if not pairs.any():
             return float("nan")
         return float(matrix.loc[labels, labels].to_numpy()[pairs].mean())
@@ -1030,9 +768,7 @@ def correlation_stress_report(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Summary
-# --------------------------------------------------------------------------- #
 
 def stress_summary(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
@@ -1044,22 +780,7 @@ def stress_summary(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Headline stress metrics for one scenario, ready for dashboard KPI cards.
-
-    Args:
-        weights: Portfolio weights.
-        scenario: Scenario to evaluate.
-        portfolio_value: Starting portfolio value.
-        covariance: Optional covariance matrix; when supplied, the baseline
-            portfolio volatility is added.
-        stressed_covariance: Optional stressed covariance matrix, typically from
-            :func:`stress_correlations`; when supplied, the stressed volatility
-            is added. Volatility fields are omitted rather than filled with
-            ``NaN`` when their input is absent.
-        missing: Missing-asset policy, see :func:`scenario_shock_vector`.
-        annualize: Treat the covariance inputs as per-period and annualize them.
-        periods_per_year: Annualization convention.
-    """
+    """Headline stress metrics for one scenario."""
     result = stress_scenario(weights, scenario, portfolio_value, missing)
     table = stress_pnl_table(weights, scenario, portfolio_value, missing)
     worst = result["Largest Loss Contributor"]

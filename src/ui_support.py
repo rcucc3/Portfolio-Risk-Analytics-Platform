@@ -1,10 +1,4 @@
-"""Presentation-layer helpers for the Streamlit product.
-
-This module contains *no* financial formulas of its own. It parses user input,
-adapts library scenarios to arbitrary tickers, formats numbers, and assembles
-tables the UI can download. Every risk, return, stress, simulation, optimization
-and factor figure is computed by the existing ``src`` engines.
-"""
+"""Streamlit UI helpers."""
 
 from __future__ import annotations
 
@@ -34,9 +28,7 @@ from src.data_loader import (
 )
 from src.stress import Scenario
 
-# --------------------------------------------------------------------------- #
 # Constants
-# --------------------------------------------------------------------------- #
 
 TICKER_PATTERN = re.compile(r"^\^?[A-Z0-9][A-Z0-9.\-]{0,19}$")
 
@@ -79,8 +71,7 @@ DOLLAR_COLUMN_ALIASES = {
     "marketvalue$",
 }
 
-#: Library scenarios whose asset shocks can be translated through an academic
-#: factor scenario when the ticker is not in the original seven-ETF set.
+# Library scenario → academic factor scenario for unknown tickers.
 LIBRARY_TO_ACADEMIC_FACTOR: dict[str, str] = {
     "Global Equity Crash": "Broad Market Crash",
     "Tech Selloff": "Broad Market Crash",
@@ -91,10 +82,7 @@ LIBRARY_TO_ACADEMIC_FACTOR: dict[str, str] = {
     "Equity Melt-Up": "Equity Melt-Up",
 }
 
-#: Preferred proxies, in order, when mapping an unknown name via market beta.
 EQUITY_PROXIES: tuple[str, ...] = ("SPY", "QQQ", "IWM", "EFA", "VTI")
-
-#: Minimum overlapping observations required to estimate a mapping beta.
 MIN_BETA_OBSERVATIONS: int = 60
 
 DEMO_HOLDINGS: list[dict[str, object]] = [
@@ -103,18 +91,16 @@ DEMO_HOLDINGS: list[dict[str, object]] = [
 ]
 
 
-# --------------------------------------------------------------------------- #
 # Errors and result containers
-# --------------------------------------------------------------------------- #
 
 
 class PortfolioInputError(ValueError):
-    """User-facing validation failure for portfolio construction."""
+    """User-facing portfolio input validation error."""
 
 
 @dataclass(frozen=True)
 class ParsedPortfolio:
-    """Validated holdings ready to send to the analytics engines."""
+    """Validated holdings ready for analytics."""
 
     weights: pd.Series
     portfolio_value: float
@@ -130,7 +116,7 @@ class ParsedPortfolio:
 
 @dataclass(frozen=True)
 class MappedShock:
-    """One asset's shock together with how it was obtained."""
+    """One asset's shock and how it was obtained."""
 
     asset: str
     shock: float | None
@@ -140,7 +126,7 @@ class MappedShock:
 
 @dataclass(frozen=True)
 class AdaptedScenario:
-    """A library scenario rewritten onto an arbitrary portfolio universe."""
+    """Library scenario rewritten onto an arbitrary universe."""
 
     name: str
     category: str
@@ -156,7 +142,7 @@ class AdaptedScenario:
 
 @dataclass(frozen=True)
 class DrawdownWindow:
-    """Peak-to-trough window of the maximum drawdown."""
+    """Peak, trough, and recovery of the maximum drawdown."""
 
     peak_date: pd.Timestamp
     trough_date: pd.Timestamp
@@ -166,7 +152,7 @@ class DrawdownWindow:
 
 @dataclass
 class DataLoadResult:
-    """Aligned market data plus any tickers that could not be downloaded."""
+    """Aligned market data plus failed tickers."""
 
     market: MarketData | None
     failed_tickers: tuple[str, ...] = ()
@@ -175,15 +161,13 @@ class DataLoadResult:
     truncated: bool = False
 
 
-# --------------------------------------------------------------------------- #
 # Formatting
-# --------------------------------------------------------------------------- #
 
 
 def fmt_pct(value: object, decimals: int = 2, signed: bool = False) -> str:
     """Format a decimal ratio as a percentage string."""
     if value is None or (isinstance(value, float) and not np.isfinite(value)) or pd.isna(value):
-        return "—"
+        return "-"
     number = float(value) * 100.0
     if abs(number) < 0.5 * 10.0 ** -decimals:
         number = abs(number)
@@ -194,7 +178,7 @@ def fmt_pct(value: object, decimals: int = 2, signed: bool = False) -> str:
 def fmt_money(value: object, decimals: int = 0) -> str:
     """Format a currency amount."""
     if value is None or (isinstance(value, float) and not np.isfinite(value)) or pd.isna(value):
-        return "—"
+        return "-"
     number = float(value)
     sign = "-" if number < 0 else ""
     return f"{sign}${abs(number):,.{decimals}f}"
@@ -203,27 +187,25 @@ def fmt_money(value: object, decimals: int = 0) -> str:
 def fmt_num(value: object, decimals: int = 2) -> str:
     """Format a dimensionless number."""
     if value is None or (isinstance(value, float) and not np.isfinite(value)) or pd.isna(value):
-        return "—"
+        return "-"
     return f"{float(value):,.{decimals}f}"
 
 
 def fmt_date(value: object) -> str:
     """Format a timestamp as YYYY-MM-DD."""
     if value is None or pd.isna(value):
-        return "—"
+        return "-"
     return str(pd.Timestamp(value).date())
 
 
 def series_as_frame(series: pd.Series, value_name: str = "Value") -> pd.DataFrame:
-    """Turn a named Series into a two-column downloadable table."""
+    """Turn a Series into a two-column downloadable table."""
     frame = series.to_frame(value_name)
     frame.index.name = series.index.name or "Item"
     return frame
 
 
-# --------------------------------------------------------------------------- #
 # Ticker and holdings parsing
-# --------------------------------------------------------------------------- #
 
 
 def normalize_ticker(raw: object) -> str:
@@ -237,7 +219,7 @@ def normalize_ticker(raw: object) -> str:
 
 
 def validate_ticker_format(ticker: str) -> str:
-    """Reject symbols that cannot be a Yahoo Finance ticker."""
+    """Reject symbols that cannot be Yahoo Finance tickers."""
     symbol = normalize_ticker(ticker)
     if not TICKER_PATTERN.fullmatch(symbol):
         raise PortfolioInputError(
@@ -252,7 +234,7 @@ def _canonical_column(name: object) -> str:
 
 
 def infer_holdings_columns(columns: Iterable[object]) -> dict[str, str]:
-    """Map a table's columns onto ticker / weight / dollar roles."""
+    """Map columns onto ticker / weight / dollar roles."""
     mapping: dict[str, str] = {}
     for column in columns:
         key = _canonical_column(column)
@@ -266,11 +248,7 @@ def infer_holdings_columns(columns: Iterable[object]) -> dict[str, str]:
 
 
 def parse_portfolio_csv(content: str | bytes) -> pd.DataFrame:
-    """Read a CSV of holdings and normalize column names.
-
-    Accepts ``Ticker,Weight`` or ``Ticker,MarketValue`` (and common aliases).
-    Values are not validated here; :func:`parse_holdings_table` does that.
-    """
+    """Read a holdings CSV and normalize column names."""
     if content is None:
         raise PortfolioInputError("The uploaded file is empty.")
     raw = content.decode("utf-8-sig") if isinstance(content, (bytes, bytearray)) else str(content)
@@ -311,7 +289,7 @@ def _require_finite(series: pd.Series, label: str) -> pd.Series:
 
 
 def _weights_from_percent_or_decimal(raw: pd.Series) -> tuple[pd.Series, str]:
-    """Interpret a weight column entered either as 30 or as 0.30."""
+    """Interpret weights entered as 30 or 0.30."""
     total = float(raw.sum())
     if abs(total - 1.0) <= 0.05:
         return raw.copy(), "decimal"
@@ -329,19 +307,7 @@ def parse_holdings_table(
     portfolio_value: float | None = None,
     value_overridden: bool = False,
 ) -> ParsedPortfolio:
-    """Validate an editable holdings table or a parsed CSV.
-
-    Args:
-        frame: Table with ``Ticker`` and either ``Weight %`` or ``MarketValue``.
-        input_mode: ``"weight"``, ``"dollars"``, or ``"auto"``.
-        allow_short: When false, negative positions are rejected.
-        normalize: If true, rescale weights so they sum to 1. Never applied
-            silently — the caller must pass this flag from an explicit UI control.
-        portfolio_value: Notional used for dollar P&L. Ignored as a weight
-            denominator unless ``value_overridden`` is true.
-        value_overridden: When dollars are supplied, divide by this notional
-            instead of the sum of positions.
-    """
+    """Validate an editable holdings table or parsed CSV."""
     if frame is None or frame.empty:
         raise PortfolioInputError("Add at least one holding.")
 
@@ -469,12 +435,12 @@ def parse_holdings_table(
 
 
 def demo_holdings_frame() -> pd.DataFrame:
-    """Default seven-ETF editor table."""
+    """Default demo ETF holdings table."""
     return pd.DataFrame(DEMO_HOLDINGS)
 
 
 def dollars_frame_from_weights(weights: Mapping[str, float], portfolio_value: float) -> pd.DataFrame:
-    """Build a dollar-position editor table from weights."""
+    """Build a dollar-position table from weights."""
     w = pf.validate_weights(weights)
     return pd.DataFrame(
         {
@@ -485,7 +451,7 @@ def dollars_frame_from_weights(weights: Mapping[str, float], portfolio_value: fl
 
 
 def drop_failed_tickers(parsed: ParsedPortfolio, failed: Sequence[str]) -> ParsedPortfolio:
-    """Remove undownloadable tickers and renormalize the remainder."""
+    """Drop undownloadable tickers and renormalize."""
     failed_set = {str(t).strip().upper() for t in failed}
     remaining = parsed.weights.drop(index=[a for a in parsed.weights.index if a in failed_set])
     if remaining.empty:
@@ -511,9 +477,7 @@ def drop_failed_tickers(parsed: ParsedPortfolio, failed: Sequence[str]) -> Parse
     )
 
 
-# --------------------------------------------------------------------------- #
-# Market data (tolerant of mixed valid / invalid tickers)
-# --------------------------------------------------------------------------- #
+# Market data
 
 
 def _warning_messages(caught: Iterable[warnings.WarningMessage]) -> tuple[str, ...]:
@@ -532,12 +496,7 @@ def load_market_data_tolerant(
     min_observations: int = config.MIN_OBSERVATIONS,
     use_cache: bool = True,
 ) -> DataLoadResult:
-    """Download a panel, isolating invalid tickers instead of failing the book.
-
-    Tries the full universe first (the fast path used by the CLI). If the
-    provider rejects one or more symbols, those names are downloaded one at a
-    time so a single bad ticker cannot take down a valid portfolio.
-    """
+    """Download panel while isolating invalid tickers."""
     requested = tuple(validate_ticker_format(t) for t in tickers)
     if not requested:
         raise PortfolioInputError("At least one ticker is required.")
@@ -564,8 +523,6 @@ def load_market_data_tolerant(
         except InsufficientHistoryError:
             raise
         except MarketDataError:
-            # A mixed panel can also surface as a generic download failure; fall
-            # through to the per-ticker probe.
             pass
 
     good: list[str] = []
@@ -618,7 +575,7 @@ def coverage_notes(
     load_warnings: Sequence[str] = (),
     min_observations: int = config.MIN_OBSERVATIONS,
 ) -> list[str]:
-    """Human-readable data-availability messages for the sidebar and Overview."""
+    """Human-readable data-availability messages."""
     notes: list[str] = []
     actual_start = market.start_date
     requested = pd.Timestamp(requested_start)
@@ -651,7 +608,7 @@ def align_benchmark_returns(
     portfolio_returns: pd.Series,
     benchmark_returns: pd.Series,
 ) -> pd.Series:
-    """Inner-join a benchmark onto the portfolio return calendar."""
+    """Inner-join a benchmark onto the portfolio calendar."""
     port = pf.validate_return_series(portfolio_returns)
     bench = pf.validate_return_series(benchmark_returns)
     aligned = bench.reindex(port.index)
@@ -666,13 +623,11 @@ def align_benchmark_returns(
     return aligned.rename(str(bench.name or "Benchmark"))
 
 
-# --------------------------------------------------------------------------- #
-# Scenario mapping for arbitrary securities
-# --------------------------------------------------------------------------- #
+# Scenario mapping
 
 
 def ols_beta(asset_returns: pd.Series, market_returns: pd.Series) -> float | None:
-    """Slope of asset returns on a proxy series, or ``None`` if unreliable."""
+    """OLS slope of asset on a proxy, or None if unreliable."""
     aligned = pd.concat(
         [
             pf.validate_return_series(asset_returns).rename("asset"),
@@ -713,24 +668,7 @@ def adapt_library_scenario(
     manual_shocks: Mapping[str, float] | None = None,
     fill_unmapped_with_zero: bool = False,
 ) -> AdaptedScenario:
-    """Rewrite a seven-ETF library scenario onto an arbitrary book.
-
-    Mapping order, applied per asset:
-
-    1. An explicit manual shock, if supplied.
-    2. The library shock, if the ticker is named in the scenario.
-    3. A factor-implied shock ``B f`` when a factor model and a mapped factor
-       scenario exist.
-    4. Market-beta mapping: ``beta_to_proxy * proxy_shock``, using SPY (or the
-       next available equity proxy in the library scenario). Requires a proxy
-       return series — either the proxy column of ``asset_returns`` or
-       ``market_returns``.
-    5. Unmapped. Zero is *never* assumed unless ``fill_unmapped_with_zero`` is
-       explicitly true.
-
-    Assets that remain unmapped are listed; ``scenario`` is ``None`` until every
-    name has a shock (or zeros are explicitly authorized).
-    """
+    """Rewrite a library scenario onto an arbitrary book."""
     labels = [str(a).strip().upper() for a in assets]
     manuals = {str(k).strip().upper(): float(v) for k, v in (manual_shocks or {}).items()}
     factor_shocks: pd.Series | None = None
@@ -843,7 +781,7 @@ def adapt_scenario_library(
     fill_unmapped_with_zero: bool = False,
     catalogue: Sequence[Scenario] | None = None,
 ) -> list[AdaptedScenario]:
-    """Adapt every predefined scenario to ``assets``."""
+    """Adapt every predefined scenario to the given assets."""
     library = catalogue if catalogue is not None else stress.PREDEFINED_SCENARIOS
     return [
         adapt_library_scenario(
@@ -871,13 +809,11 @@ def custom_scenario_from_shocks(
     return Scenario(name=name, shocks=cleaned, description=description, category="Custom")
 
 
-# --------------------------------------------------------------------------- #
 # Insights, calendar returns, drawdowns
-# --------------------------------------------------------------------------- #
 
 
 def max_drawdown_window(returns: pd.Series | pd.DataFrame) -> DrawdownWindow:
-    """Peak, trough and optional recovery date of the maximum drawdown."""
+    """Peak, trough, and recovery of the maximum drawdown."""
     series = pf.validate_return_series(returns)
     wealth = pf.growth_of_dollar(series)
     running_peak = wealth.cummax()
@@ -899,7 +835,7 @@ def max_drawdown_window(returns: pd.Series | pd.DataFrame) -> DrawdownWindow:
 
 
 def calendar_returns(returns: pd.Series | pd.DataFrame, freq: str = "YE") -> pd.Series:
-    """Compound daily returns into calendar periods (``YE`` or ``ME``)."""
+    """Compound daily returns into calendar periods."""
     series = pf.validate_return_series(returns)
     try:
         compounded = (1.0 + series).resample(freq).prod() - 1.0
@@ -914,7 +850,7 @@ def rolling_annualized_return(
     window: int = config.ROLLING_WINDOW,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Trailing geometrically annualized return over a fixed window."""
+    """Trailing geometrically annualized return."""
     series = pf.validate_return_series(returns)
     if window < 2:
         raise ValueError("window must be at least 2.")
@@ -950,7 +886,7 @@ def build_insights(
     drawdown: DrawdownWindow,
     diversification: pd.Series | None = None,
 ) -> list[str]:
-    """Deterministic commentary derived only from calculated metrics."""
+    """Deterministic commentary from calculated metrics."""
     lines: list[str] = []
     w = pf.validate_weights(weights)
     contrib = risk_contrib["Risk Contribution %"]
@@ -999,7 +935,7 @@ def build_insights(
 
 
 def factor_lag_note(price_end: pd.Timestamp, factor_end: pd.Timestamp) -> str | None:
-    """Warn when Ken French (or proxy) data ends before the price sample."""
+    """Warn when factor data ends before the price sample."""
     if pd.Timestamp(factor_end) < pd.Timestamp(price_end) - pd.Timedelta(days=5):
         return (
             f"Factor data ends on {fmt_date(factor_end)} while price data extends to "
@@ -1009,20 +945,17 @@ def factor_lag_note(price_end: pd.Timestamp, factor_end: pd.Timestamp) -> str | 
     return None
 
 
-# --------------------------------------------------------------------------- #
 # Optimization helpers
-# --------------------------------------------------------------------------- #
 
 
 def feasible_max_weight(n_assets: int, requested: float) -> tuple[float, str | None]:
-    """Raise a per-asset cap that cannot fund a fully invested book."""
+    """Raise a per-asset cap that cannot fund full investment."""
     n = int(n_assets)
     cap = float(requested)
     if n <= 0:
         raise PortfolioInputError("At least one asset is required.")
     if n * cap + 1e-12 < 1.0:
         raised = min(1.0, math.ceil(1_000_000.0 / n) / 1_000_000.0)
-        # For two assets a 40% cap cannot reach 100%; use 100% unless n is huge.
         raised = 1.0 if n <= 3 else min(1.0, 1.0 / n + 1e-6)
         return raised, (
             f"Per-asset cap raised from {cap:.0%} to {raised:.0%} because {n} assets "
@@ -1032,7 +965,7 @@ def feasible_max_weight(n_assets: int, requested: float) -> tuple[float, str | N
 
 
 def groups_apply(assets: Sequence[str]) -> bool:
-    """True only when every configured sleeve member is in the book."""
+    """True when a configured sleeve is fully present."""
     labels = {str(a) for a in assets}
     return any(set(members) <= labels for members in config.ASSET_GROUPS.values())
 
@@ -1045,7 +978,7 @@ def build_constraints(
     asset_bounds: Mapping[str, tuple[float, float]] | None = None,
     use_groups: bool | None = None,
 ) -> tuple[opt.AllocationConstraints, tuple[str, ...]]:
-    """Construct allocation constraints, applying groups only when they are defined."""
+    """Build allocation constraints for the current book."""
     labels = [str(a) for a in assets]
     notes: list[str] = []
     cap, cap_note = feasible_max_weight(len(labels), max_weight)
@@ -1078,7 +1011,7 @@ def binding_constraint_notes(
     constraints: opt.AllocationConstraints,
     tolerance: float = 1e-4,
 ) -> list[str]:
-    """Describe box and group bounds that the solution sits on."""
+    """Describe box/group bounds the solution sits on."""
     bounds = constraints.bounds(list(result.weights.index))
     at_cap = [
         asset
@@ -1118,9 +1051,7 @@ def binding_constraint_notes(
     return notes
 
 
-# --------------------------------------------------------------------------- #
-# Core analytics assembly (calls engines only)
-# --------------------------------------------------------------------------- #
+# Core analytics
 
 
 def compute_core_analysis(
@@ -1133,7 +1064,7 @@ def compute_core_analysis(
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
     benchmark_returns: pd.Series | None = None,
 ) -> dict[str, object]:
-    """Run the cheap, always-on analytics used by Overview / Performance / Risk."""
+    """Always-on analytics for Overview / Performance / Risk."""
     frame = pf.validate_return_frame(asset_returns)
     w = pf.validate_weights(weights, assets=frame.columns)
     portfolio = pf.portfolio_returns(frame, w)
@@ -1221,7 +1152,7 @@ def run_adapted_stress(
 
 
 def mapping_table(adapted: AdaptedScenario) -> pd.DataFrame:
-    """Tabular view of how each asset received its shock."""
+    """How each asset received its shock."""
     rows = [
         {
             "Asset": item.asset,
@@ -1234,13 +1165,11 @@ def mapping_table(adapted: AdaptedScenario) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("Asset")
 
 
-# --------------------------------------------------------------------------- #
 # Downloads
-# --------------------------------------------------------------------------- #
 
 
 def export_tables(core: Mapping[str, object], extras: Mapping[str, pd.DataFrame] | None = None) -> dict[str, pd.DataFrame]:
-    """Build the downloadable CSV/Excel payload. No simulation path arrays."""
+    """Build downloadable CSV/Excel tables."""
     tables: dict[str, pd.DataFrame] = {
         "portfolio_summary": series_as_frame(core["summary"]),  # type: ignore[arg-type]
         "asset_statistics": core["asset_statistics"],  # type: ignore[dict-item]
@@ -1270,7 +1199,7 @@ def workbook_bytes(tables: Mapping[str, pd.DataFrame]) -> bytes:
 
 
 def sample_paths(values: np.ndarray, n_paths: int = 80, seed: int = 0) -> np.ndarray:
-    """Pick a small, reproducible subset of simulated value paths."""
+    """Reproducible subset of simulated value paths."""
     total = int(values.shape[0])
     take = min(int(n_paths), total)
     rng = np.random.default_rng(seed)

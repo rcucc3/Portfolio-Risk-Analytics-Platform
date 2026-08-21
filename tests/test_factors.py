@@ -1,12 +1,4 @@
-"""Deterministic unit tests for the Phase 6 factor engine.
-
-Every test is offline: factor matrices are constructed in memory, so the Ken
-French loader's network path is never exercised here. Expected values come from
-exact algebra on synthetic data whose true alphas and betas are known by
-construction, from independent ``numpy.linalg.lstsq`` recomputation, or from
-brute-force loops that recompute rolling windows one at a time — never from the
-module's own output.
-"""
+"""Tests for the factor engine."""
 
 from __future__ import annotations
 
@@ -21,8 +13,6 @@ from src import risk
 from src import stress
 
 ASSETS = ["AAA", "BBB", "CCC"]
-#: The four academic factors, matching the live model so the bundled factor
-#: scenarios (which shock momentum) apply to these fixtures unchanged.
 FACTOR_NAMES = [fx.MARKET, fx.SMB, fx.HML, fx.MOMENTUM]
 N_PARAMETERS = len(FACTOR_NAMES) + 1
 
@@ -42,15 +32,12 @@ WEIGHTS = pd.Series({"AAA": 0.5, "BBB": 0.3, "CCC": 0.2})
 
 
 def _factor_frame(n: int = 400, seed: int = 11) -> pd.DataFrame:
-    """Reproducible factor returns with realistic scale and mild correlation."""
     rng = np.random.default_rng(seed)
     index = pd.bdate_range("2020-01-01", periods=n)
     market = rng.normal(0.0004, 0.011, n)
     return pd.DataFrame(
         {
             fx.MARKET: market,
-            # Correlated with the market on purpose: Euler contributions must be
-            # tested on a factor set where standalone variances would not add up.
             fx.SMB: 0.15 * market + rng.normal(0.0, 0.005, n),
             fx.HML: -0.10 * market + rng.normal(0.0, 0.006, n),
             fx.MOMENTUM: -0.20 * market + rng.normal(0.0, 0.007, n),
@@ -72,7 +59,7 @@ def factor_data() -> fx.FactorData:
 
 @pytest.fixture
 def exact_returns(factor_data: fx.FactorData) -> pd.DataFrame:
-    """Asset returns that satisfy the factor model with zero residual."""
+    """Zero-residual returns under the true factor loadings."""
     frame = factor_data.returns
     modelled = pd.DataFrame(
         frame.to_numpy() @ TRUE_BETAS.T.to_numpy(), index=frame.index, columns=ASSETS
@@ -82,7 +69,7 @@ def exact_returns(factor_data: fx.FactorData) -> pd.DataFrame:
 
 @pytest.fixture
 def noisy_returns(factor_data: fx.FactorData) -> pd.DataFrame:
-    """Asset returns with known betas plus idiosyncratic noise of known scale."""
+    """Known betas plus idiosyncratic noise of known scale."""
     rng = np.random.default_rng(99)
     frame = factor_data.returns
     modelled = pd.DataFrame(
@@ -99,9 +86,7 @@ def model(factor_data: fx.FactorData, noisy_returns: pd.DataFrame) -> fx.FactorM
     return fx.fit_factor_model(noisy_returns, factor_data)
 
 
-# --------------------------------------------------------------------------- #
 # Factor data and alignment
-# --------------------------------------------------------------------------- #
 
 def test_factor_data_rejects_a_risk_free_series_on_a_different_index() -> None:
     frame = _factor_frame(50)
@@ -235,7 +220,6 @@ def test_french_csv_parser_converts_percent_and_stops_at_the_footer() -> None:
     assert list(frame.columns) == ["Mkt-RF", "SMB", "HML", "RF"]
     assert len(frame) == 2
     assert frame.index[0] == pd.Timestamp("2020-01-02")
-    # 1.00 percent must become 0.01, not stay at 1.0.
     assert frame.loc["2020-01-02", "Mkt-RF"] == pytest.approx(0.01)
     assert frame.loc["2020-01-03", "SMB"] == pytest.approx(0.005)
 
@@ -255,9 +239,7 @@ def test_french_csv_parser_ignores_a_trailing_annual_section() -> None:
     assert len(frame) == 1
 
 
-# --------------------------------------------------------------------------- #
 # Regression
-# --------------------------------------------------------------------------- #
 
 def test_regression_recovers_known_alpha_and_betas_exactly(
     factor_data: fx.FactorData, exact_returns: pd.DataFrame
@@ -319,7 +301,6 @@ def test_standard_errors_and_t_statistics_are_consistent(model: fx.FactorModel) 
     coefficients = pd.concat([pd.Series({"Alpha": fit.alpha}), fit.betas])
     ratio = coefficients / fit.standard_errors
     np.testing.assert_allclose(ratio.to_numpy(), fit.t_statistics.to_numpy(), rtol=1e-12)
-    # A beta of 1.4 estimated on 400 observations must be overwhelmingly significant.
     assert abs(fit.t_statistics[fx.MARKET]) > 10
 
 
@@ -352,7 +333,6 @@ def test_regression_rejects_a_near_collinear_factor_set(model: fx.FactorModel) -
 
 
 def test_regression_rejects_a_constant_factor_column(model: fx.FactorModel) -> None:
-    # A constant column duplicates the intercept, so the model is unidentified.
     degenerate = model.factors.copy()
     degenerate["Constant"] = 0.01
     with pytest.raises(ValueError, match="rank deficient|collinear"):
@@ -402,9 +382,7 @@ def test_loadings_table_annualizes_residual_volatility(model: fx.FactorModel) ->
     )
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio exposures and attribution
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_exposure_equals_the_weighted_asset_betas(model: fx.FactorModel) -> None:
     exposures = fx.portfolio_factor_exposures(WEIGHTS, model.betas)
@@ -486,9 +464,7 @@ def test_attribution_residual_vanishes_when_the_model_is_exact(
     assert table.loc["Residual", "Cumulative Contribution"] == pytest.approx(0.0, abs=1e-12)
 
 
-# --------------------------------------------------------------------------- #
 # Risk model
-# --------------------------------------------------------------------------- #
 
 def test_factor_implied_covariance_equals_b_sigma_bt_plus_d(model: fx.FactorModel) -> None:
     implied = fx.factor_implied_covariance(model, annualize=False)
@@ -502,7 +478,6 @@ def test_factor_implied_covariance_equals_b_sigma_bt_plus_d(model: fx.FactorMode
 
 def test_factor_implied_covariance_on_a_hand_built_example() -> None:
     index = pd.bdate_range("2021-01-04", periods=6)
-    # Two factors, deliberately uncorrelated with hand-checkable variances.
     frame = pd.DataFrame(
         {"F1": [0.01, -0.01, 0.01, -0.01, 0.01, -0.01], "F2": [0.02, 0.02, -0.02, -0.02, 0.02, 0.02]},
         index=index,
@@ -514,7 +489,6 @@ def test_factor_implied_covariance_on_a_hand_built_example() -> None:
 
     factor_cov = frame.cov().to_numpy()
     implied = fx.factor_implied_covariance(fitted, annualize=False).to_numpy()
-    # Zero residual, so the implied covariance is exactly B Sigma_f B'.
     assert implied[0, 0] == pytest.approx(factor_cov[0, 0], rel=1e-9)
     assert implied[1, 1] == pytest.approx(4.0 * factor_cov[1, 1], rel=1e-9)
     assert implied[0, 1] == pytest.approx(2.0 * factor_cov[0, 1], rel=1e-9, abs=1e-18)
@@ -593,7 +567,7 @@ def test_factor_risk_contributions_sum_to_systematic_volatility(model: fx.Factor
 
 
 def test_euler_contributions_differ_from_standalone_variances(model: fx.FactorModel) -> None:
-    """With correlated factors the naive beta^2 * var split must not reconcile."""
+    """Naive beta^2 * var split does not reconcile when factors are correlated."""
     contributions = fx.factor_risk_contributions(WEIGHTS, model, annualize=False)
     exposures = fx.portfolio_factor_exposures(WEIGHTS, model.betas)
     standalone = exposures**2 * model.factors.var()
@@ -607,13 +581,11 @@ def test_euler_contributions_differ_from_standalone_variances(model: fx.FactorMo
 def test_factor_risk_contribution_mirrors_the_phase_2_asset_decomposition(
     model: fx.FactorModel,
 ) -> None:
-    """The factor-space Euler split uses the same convention as risk.py."""
+    """Factor-space Euler split matches the risk.py convention."""
     contributions = fx.factor_risk_contributions(WEIGHTS, model, annualize=False)
     exposures = fx.portfolio_factor_exposures(WEIGHTS, model.betas)
     factor_cov = fx.factor_covariance(model, annualize=False)
     reference = risk.risk_contributions(exposures / exposures.sum(), factor_cov)
-    # Scaling the exposure vector to sum to 1 lets risk.py validate it as weights;
-    # component contributions then scale by exactly the same factor.
     scale = float(exposures.sum())
     np.testing.assert_allclose(
         contributions["Component Volatility"].sort_index().to_numpy(),
@@ -655,7 +627,6 @@ def test_factor_risk_contributions_reject_zero_systematic_risk() -> None:
     index = pd.bdate_range("2021-01-04", periods=40)
     frame = pd.DataFrame({"F1": np.tile([0.01, -0.01], 20)}, index=index)
     data = fx.FactorData(returns=frame, risk_free=None, kind=fx.PROXY)
-    # Two assets with equal and opposite loadings, held so exposures cancel.
     returns = pd.DataFrame(
         {"X": frame["F1"], "Y": -frame["F1"]}, index=index
     )
@@ -664,9 +635,7 @@ def test_factor_risk_contributions_reject_zero_systematic_risk() -> None:
         fx.factor_risk_contributions({"X": 0.5, "Y": 0.5}, fitted)
 
 
-# --------------------------------------------------------------------------- #
 # Rolling betas and stability
-# --------------------------------------------------------------------------- #
 
 def test_rolling_betas_match_a_brute_force_window_loop(model: fx.FactorModel) -> None:
     window = 60
@@ -719,7 +688,7 @@ def test_first_rolling_timestamp_is_the_window_end_not_its_start(
 
 
 def test_rolling_betas_use_no_future_observations(model: fx.FactorModel) -> None:
-    """Corrupting the tail must leave earlier rolling estimates untouched."""
+    """Corrupting the sample tail must not change earlier rolling betas."""
     window = 60
     cutoff = 200
     baseline = fx.rolling_factor_betas(model.excess_returns["AAA"], model.factors, window)
@@ -796,9 +765,7 @@ def test_stability_of_an_exact_model_shows_no_dispersion(
     assert stability["Rolling Std Dev"].max() == pytest.approx(0.0, abs=1e-8)
 
 
-# --------------------------------------------------------------------------- #
 # Factor stress testing
-# --------------------------------------------------------------------------- #
 
 def test_factor_scenario_validation() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
@@ -905,9 +872,7 @@ def test_get_factor_scenario_is_case_insensitive_and_reports_unknowns() -> None:
         fx.get_factor_scenario("Nonexistent")
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio comparison
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_comparison_reports_each_allocation(model: fx.FactorModel) -> None:
     equal = pd.Series(1.0 / 3.0, index=ASSETS)
@@ -930,7 +895,6 @@ def test_portfolio_r_squared_comes_from_the_portfolio_series(model: fx.FactorMod
     portfolio_excess = model.excess_returns[ASSETS] @ WEIGHTS
     fit = fx.factor_regression(portfolio_excess, model.factors, asset="Current")
     assert table.loc["Current", "R-Squared"] == pytest.approx(fit.r_squared, rel=1e-12)
-    # Not the weighted average of the asset R-squared values.
     assert table.loc["Current", "R-Squared"] != pytest.approx(
         float((model.r_squared * WEIGHTS).sum()), rel=1e-6
     )
@@ -941,9 +905,7 @@ def test_portfolio_comparison_rejects_an_empty_mapping(model: fx.FactorModel) ->
         fx.compare_portfolio_factor_exposures({}, model)
 
 
-# --------------------------------------------------------------------------- #
 # Covariance shrinkage and diagnostics
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def sample_cov(model: fx.FactorModel) -> pd.DataFrame:
@@ -1034,9 +996,7 @@ def test_covariance_comparison_rejects_mismatched_labels(sample_cov: pd.DataFram
         fx.covariance_comparison({"Sample": sample_cov, "Other": other}, WEIGHTS)
 
 
-# --------------------------------------------------------------------------- #
 # Optimization integration
-# --------------------------------------------------------------------------- #
 
 def test_structured_covariance_is_accepted_by_the_phase_5_optimizer(
     model: fx.FactorModel, sample_cov: pd.DataFrame
@@ -1077,7 +1037,7 @@ def test_optimized_weights_remain_feasible_under_every_covariance_model(
 
 
 def test_minimum_volatility_under_a_factor_covariance_matches_the_known_solution() -> None:
-    """One factor, two assets: the analytic minimum-variance weight is checkable."""
+    """One-factor two-asset analytic minimum-variance weight."""
     index = pd.bdate_range("2021-01-04", periods=60)
     frame = pd.DataFrame({"F1": np.tile([0.01, -0.01, 0.02, -0.02], 15)}, index=index)
     data = fx.FactorData(returns=frame, risk_free=None, kind=fx.PROXY)
@@ -1094,9 +1054,6 @@ def test_minimum_volatility_under_a_factor_covariance_matches_the_known_solution
 
     values = cov.to_numpy()
     analytic = (values[1, 1] - values[0, 1]) / (values[0, 0] + values[1, 1] - 2 * values[0, 1])
-    # Both assets load on the same single factor, so they are nearly collinear and
-    # the unconstrained optimum shorts the higher-beta asset. Bounds are widened
-    # deliberately so the interior analytic solution is actually attainable.
     result = opt.minimum_volatility(cov, constraints=opt.AllocationConstraints(-1.0, 2.0))
     assert analytic > 1.0
     assert result.weights["X"] == pytest.approx(analytic, abs=1e-6)
@@ -1127,15 +1084,11 @@ def test_common_yardstick_volatility_rescoring(
     assert table.loc[("Minimum Volatility", "Sample"), "Volatility"] == pytest.approx(
         table.loc[("Minimum Volatility", "Sample"), "Volatility (Common Yardstick)"], rel=1e-9
     )
-    # The sample-covariance solution must be the lowest-risk portfolio when the
-    # sample covariance is the yardstick, by definition of the optimum.
     scored = table.xs("Minimum Volatility")["Volatility (Common Yardstick)"]
     assert scored["Sample"] <= scored["Factor-Implied"] + 1e-10
 
 
-# --------------------------------------------------------------------------- #
 # Summary
-# --------------------------------------------------------------------------- #
 
 def test_factor_summary_fields_agree_with_the_underlying_calculations(
     model: fx.FactorModel,

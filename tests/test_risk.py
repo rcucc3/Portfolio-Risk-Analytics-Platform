@@ -1,13 +1,4 @@
-"""Deterministic unit tests for the Phase 2 risk engine.
-
-Expected values are derived analytically (order-statistic interpolation,
-closed-form normal quantiles, hand-solved covariance algebra) rather than
-copied from program output. No test touches the network.
-
-Reference constants used below, from the standard normal distribution:
-    z(0.05) = -1.6448536269514729,  phi(z)/0.05 = 2.0627128075074253
-    z(0.01) = -2.3263478740408408,  phi(z)/0.01 = 2.6652142203458080
-"""
+"""Tests for the risk engine."""
 
 from __future__ import annotations
 
@@ -38,7 +29,6 @@ def _series(values) -> pd.Series:
 
 @pytest.fixture
 def ramp_20() -> pd.Series:
-    """20 returns evenly spaced from -10% to +9% in 1% steps."""
     return _series(np.linspace(-0.10, 0.09, 20))
 
 
@@ -58,7 +48,6 @@ def left_skewed() -> pd.Series:
 
 @pytest.fixture
 def two_asset_returns() -> pd.DataFrame:
-    """Deterministic two-asset daily return panel with 40 observations."""
     n = 40
     t = np.arange(n)
     return pd.DataFrame(
@@ -70,36 +59,26 @@ def two_asset_returns() -> pd.DataFrame:
     )
 
 
-#: Annualized covariance with vols of 20% / 30% and correlation 1/6.
 COV_2X2 = pd.DataFrame(
     [[0.04, 0.01], [0.01, 0.09]], index=["A", "B"], columns=["A", "B"]
 )
 
-#: Annualized covariance with vols of 20% / 30% and correlation -0.5.
 COV_HEDGE = pd.DataFrame(
     [[0.04, -0.03], [-0.03, 0.09]], index=["A", "B"], columns=["A", "B"]
 )
 
 
-# --------------------------------------------------------------------------- #
 # Historical VaR
-# --------------------------------------------------------------------------- #
 
 def test_historical_var_is_a_positive_loss_magnitude(ramp_20):
-    # 5% quantile of 20 points sits 0.95 of the way from -0.10 to -0.09,
-    # i.e. -0.0905, so VaR is reported as +0.0905.
     assert risk.historical_var(ramp_20, 0.95) == pytest.approx(0.0905)
 
 
 def test_historical_var_matches_exact_order_statistic(ramp_21):
-    # With n = 21, position 0.05 * 20 = 1 lands exactly on the second value.
     assert risk.historical_var(ramp_21, 0.95) == pytest.approx(0.09)
 
 
 def test_historical_var_negative_when_the_tail_quantile_is_a_gain():
-    # 20 gains from +1% to +20% in 1% steps: the 5% quantile sits 0.95 of the way
-    # from 0.01 to 0.02, i.e. +0.0195. No loss at that confidence, so the reported
-    # VaR is negative rather than clipped to zero.
     all_gains = _series(np.linspace(0.01, 0.20, 20))
     assert risk.historical_var(all_gains, 0.95) == pytest.approx(-0.0195)
 
@@ -113,13 +92,10 @@ def test_historical_var_increases_with_confidence():
 
 
 def test_historical_var_makes_no_normality_assumption(left_skewed):
-    # Mirroring the sample flips its skew but leaves the standard deviation
-    # unchanged, so the symmetric Gaussian model reports the same VaR for both.
     mirrored = -left_skewed
     assert risk.gaussian_var(left_skewed, 0.95, include_mean=False) == pytest.approx(
         risk.gaussian_var(mirrored, 0.95, include_mean=False)
     )
-    # The empirical estimator distinguishes them: 7.05% of loss versus under 1%.
     assert risk.historical_var(left_skewed, 0.95) == pytest.approx(0.0705)
     assert risk.historical_var(mirrored, 0.95) < 0.01
 
@@ -128,8 +104,6 @@ def test_gaussian_var_understates_a_fat_left_tail(left_skewed):
     assert risk.historical_var(left_skewed, 0.95) > risk.gaussian_var(
         left_skewed, 0.95, include_mean=False
     )
-    # The 95% tail holds the five worst observations, -12% through -8%,
-    # whose mean is exactly -10%.
     assert risk.historical_cvar(left_skewed, 0.95) == pytest.approx(0.10)
 
 
@@ -146,7 +120,6 @@ def test_historical_var_rejects_non_numeric_confidence(ramp_20, bad):
 
 
 def test_historical_var_rejects_sample_too_small_for_the_tail():
-    # A 95% tail needs at least ceil(1/0.05) = 20 observations.
     with pytest.raises(ValueError, match="Insufficient observations"):
         risk.historical_var(_series(np.linspace(-0.05, 0.05, 19)), 0.95)
 
@@ -167,9 +140,7 @@ def test_historical_var_rejects_empty_input():
         risk.historical_var(pd.Series(dtype="float64"), 0.95)
 
 
-# --------------------------------------------------------------------------- #
 # Historical CVaR / Expected Shortfall
-# --------------------------------------------------------------------------- #
 
 def test_historical_cvar_averages_the_observations_in_the_tail(ramp_20):
     # Threshold -0.0905; only -0.10 lies at or below it.
@@ -177,7 +148,6 @@ def test_historical_cvar_averages_the_observations_in_the_tail(ramp_20):
 
 
 def test_historical_cvar_includes_observations_equal_to_the_threshold(ramp_21):
-    # Threshold is exactly -0.09, so the tail is {-0.10, -0.09}: mean -0.095.
     assert risk.historical_cvar(ramp_21, 0.95) == pytest.approx(0.095)
 
 
@@ -202,7 +172,6 @@ def test_historical_cvar_increases_with_confidence():
 
 
 def test_historical_cvar_captures_a_tail_that_var_ignores():
-    # VaR reads the quantile only; CVaR averages everything beyond it.
     sample = _series([-0.60] + list(np.linspace(-0.05, 0.05, 99)))
     assert risk.historical_cvar(sample, 0.99) > risk.historical_var(sample, 0.99)
 
@@ -212,9 +181,7 @@ def test_historical_cvar_rejects_insufficient_sample(ramp_20):
         risk.historical_cvar(ramp_20, 0.99)
 
 
-# --------------------------------------------------------------------------- #
 # Gaussian VaR and Expected Shortfall
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def zero_mean_sample() -> pd.Series:
@@ -292,9 +259,7 @@ def test_gaussian_var_rejects_invalid_horizon(zero_mean_sample, bad):
         risk.gaussian_var(zero_mean_sample, 0.95, bad)
 
 
-# --------------------------------------------------------------------------- #
 # Multi-day horizon construction
-# --------------------------------------------------------------------------- #
 
 def test_overlapping_horizon_returns_compound_exactly():
     returns = _series([0.10, -0.05, 0.02, 0.03])
@@ -313,7 +278,6 @@ def test_overlapping_windows_are_dated_at_the_window_end():
     returns = _series([0.10, -0.05, 0.02, 0.03])
     compounded = risk.overlapping_horizon_returns(returns, 3)
     assert list(compounded.index) == list(returns.index[2:])
-    # The first window covers returns 0..2 and is dated at the third date.
     assert compounded.iloc[0] == pytest.approx(1.10 * 0.95 * 1.02 - 1)
 
 
@@ -331,15 +295,11 @@ def test_multi_day_windows_do_not_leak_future_information():
 
     original = risk.overlapping_horizon_returns(base, 2)
     modified = risk.overlapping_horizon_returns(perturbed, 2)
-    # Every window ending before the final date must be untouched.
     np.testing.assert_allclose(original.iloc[:-1].to_numpy(), modified.iloc[:-1].to_numpy())
     assert modified.iloc[-1] != pytest.approx(original.iloc[-1])
 
 
 def test_historical_multi_day_var_does_not_use_sqrt_time_scaling():
-    # Perfectly mean-reverting returns: +5%, -5%, +5%, ... Every 10-day window
-    # compounds to (1.05 * 0.95)^5 - 1 = -1.2438%, while sqrt-time scaling of the
-    # 1-day VaR would report 5% * sqrt(10) = 15.8%.
     alternating = _series([0.05 if i % 2 == 0 else -0.05 for i in range(100)])
     ten_day_var = risk.historical_var(alternating, 0.95, horizon=10)
     assert ten_day_var == pytest.approx(1 - 0.9975**5)
@@ -351,7 +311,6 @@ def test_historical_multi_day_var_does_not_use_sqrt_time_scaling():
 
 def test_historical_multi_day_cvar_uses_compounded_windows():
     alternating = _series([0.05 if i % 2 == 0 else -0.05 for i in range(100)])
-    # All 10-day windows compound to the same value, so VaR and CVaR coincide.
     assert risk.historical_cvar(alternating, 0.95, horizon=10) == pytest.approx(
         1 - 0.9975**5
     )
@@ -361,7 +320,6 @@ def test_multi_day_var_shrinks_the_effective_sample():
     sample = _series(np.linspace(-0.02, 0.02, 120))
     assert len(risk.overlapping_horizon_returns(sample, 10)) == 111
     with pytest.raises(ValueError, match="Insufficient observations"):
-        # 120 - 100 + 1 = 21 windows cannot support a 99% tail estimate.
         risk.historical_var(sample, 0.99, horizon=100)
 
 
@@ -376,9 +334,7 @@ def test_overlapping_horizon_returns_reject_invalid_horizon(bad):
         risk.overlapping_horizon_returns(_series([0.01, 0.02, 0.03]), bad)
 
 
-# --------------------------------------------------------------------------- #
 # Covariance-based portfolio risk
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_variance_matches_hand_computed_quadratic_form():
     # w' Sigma w = 0.6*0.028 + 0.4*0.042 = 0.0336
@@ -396,7 +352,6 @@ def test_portfolio_volatility_annualizes_a_daily_covariance_matrix():
     weights = {"A": 0.6, "B": 0.4}
     annualized = risk.portfolio_volatility(weights, daily, annualize=True)
     assert annualized == pytest.approx(math.sqrt(0.0336))
-    # Without annualization the result stays at the input (daily) frequency.
     assert risk.portfolio_volatility(weights, daily) == pytest.approx(
         math.sqrt(0.0336 / TRADING_DAYS)
     )
@@ -455,9 +410,7 @@ def test_weight_count_mismatch_is_rejected():
         risk.portfolio_volatility([0.4, 0.3, 0.3], COV_2X2)
 
 
-# --------------------------------------------------------------------------- #
 # Risk decomposition
-# --------------------------------------------------------------------------- #
 
 def test_marginal_contribution_matches_hand_computed_example():
     # Sigma w = [0.028, 0.042]; sigma_p = sqrt(0.0336).
@@ -500,7 +453,6 @@ def test_negative_risk_contribution_is_preserved_for_a_hedging_asset():
     )
     assert table.loc["B", "Risk Contribution %"] < 0
     assert table.loc["A", "Risk Contribution %"] > 1.0
-    # Invariants must still hold with a negative component.
     assert table["Component Contribution to Risk"].sum() == pytest.approx(0.14, rel=1e-12)
     assert table["Risk Contribution %"].sum() == pytest.approx(1.0, rel=1e-12)
 
@@ -548,7 +500,6 @@ def test_risk_contribution_table_is_sorted_and_annualized(two_asset_returns):
     assert list(table.columns) == expected_columns
     assert table["Risk Contribution %"].is_monotonic_decreasing
 
-    # Standalone volatilities must reconcile with the Phase 1 asset statistics.
     phase1_vol = pf.asset_annualized_volatility(two_asset_returns)
     for asset in table.index:
         assert table.loc[asset, "Annualized Standalone Volatility"] == pytest.approx(
@@ -569,9 +520,7 @@ def test_risk_contribution_table_can_preserve_input_order(two_asset_returns):
     assert list(table.index) == ["A", "B"]
 
 
-# --------------------------------------------------------------------------- #
 # Diversification analytics
-# --------------------------------------------------------------------------- #
 
 def test_diversification_ratio_is_one_for_perfectly_correlated_assets():
     # Correlation 0.06 / (0.2 * 0.3) = 1.0.
@@ -637,13 +586,10 @@ def test_diversification_metrics_annualize_a_daily_covariance_matrix():
     pd.testing.assert_series_equal(annual, direct)
 
 
-# --------------------------------------------------------------------------- #
 # Rolling analytics
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def rolling_sample() -> pd.Series:
-    """60 deterministic, non-constant daily returns."""
     t = np.arange(60)
     return _series(0.0005 + 0.012 * np.sin(t / 4.0))
 
@@ -760,13 +706,10 @@ def test_rolling_risk_analytics_drops_the_warm_up_period(rolling_sample):
     assert np.isfinite(frame.to_numpy()).all()
 
 
-# --------------------------------------------------------------------------- #
 # Tail risk comparison table and risk summary
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def panel_300() -> pd.DataFrame:
-    """Three-asset deterministic panel long enough for 99% tail estimates."""
     t = np.arange(300)
     return pd.DataFrame(
         {

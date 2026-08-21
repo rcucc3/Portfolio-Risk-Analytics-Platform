@@ -1,8 +1,4 @@
-"""Deterministic tests for visual helpers.
-
-These cover HTML escaping, insight labelling and chart-theme presentation
-math. They do not render Streamlit widgets.
-"""
+"""Tests for visual style helpers."""
 
 from __future__ import annotations
 

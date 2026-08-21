@@ -1,11 +1,4 @@
-"""Deterministic unit tests for the Phase 5 optimization engine.
-
-Every test is offline. Expected values come from closed-form mean-variance
-algebra (analytic minimum-variance and tangency weights), from exact
-concentration arithmetic, or from independent re-derivation with the Phase 2-4
-engines — never from program output. Optimized solutions are additionally
-re-checked against their constraints rather than trusting the solver.
-"""
+"""Tests for the optimization engine."""
 
 from __future__ import annotations
 
@@ -25,7 +18,6 @@ COV2 = pd.DataFrame([[0.01, 0.0], [0.0, 0.04]], index=TWO_ASSETS, columns=TWO_AS
 MU2 = pd.Series({"A": 0.08, "B": 0.12})
 RF = 0.02
 
-#: Unconstrained bounds, so analytic interior solutions are attainable.
 FREE = opt.AllocationConstraints(lower_bound=0.0, upper_bound=1.0)
 
 FOUR_ASSETS = ["SPY", "QQQ", "TLT", "GLD"]
@@ -33,7 +25,6 @@ FOUR_ASSETS = ["SPY", "QQQ", "TLT", "GLD"]
 
 @pytest.fixture
 def cov4() -> pd.DataFrame:
-    """Four-asset covariance with equities correlated and bonds diversifying."""
     vols = np.array([0.16, 0.22, 0.12, 0.15])
     correlation = np.array(
         [
@@ -54,7 +45,6 @@ def mu4() -> pd.Series:
 
 @pytest.fixture
 def returns4() -> pd.DataFrame:
-    """Deterministic synthetic daily returns with a repeating pattern."""
     days = 300
     index = pd.bdate_range("2020-01-01", periods=days)
     t = np.arange(days)
@@ -69,9 +59,7 @@ def returns4() -> pd.DataFrame:
     )
 
 
-# --------------------------------------------------------------------------- #
 # Input validation
-# --------------------------------------------------------------------------- #
 
 def test_expected_returns_must_align_with_the_covariance():
     with pytest.raises(ValueError, match="do not align"):
@@ -141,7 +129,6 @@ def test_group_referencing_an_unknown_asset_is_rejected():
 
 
 def test_group_minimum_exceeding_available_headroom_is_rejected():
-    # Box bounds are feasible (4 x 0.40 = 1.6), so the group check is what fires.
     constraints = opt.AllocationConstraints(
         upper_bound=0.40, groups=(opt.GroupConstraint("Solo", ("SPY",), minimum=0.60),)
     )
@@ -171,9 +158,7 @@ def test_infeasible_group_minimums_are_rejected(cov4):
         constraints.validate(FOUR_ASSETS)
 
 
-# --------------------------------------------------------------------------- #
 # Expected-return estimators
-# --------------------------------------------------------------------------- #
 
 def test_geometric_expected_returns_match_phase_one(returns4):
     expected = opt.expected_returns(returns4, "geometric")
@@ -188,9 +173,6 @@ def test_arithmetic_expected_returns_annualize_the_daily_mean(returns4):
 
 
 def test_arithmetic_mean_exceeds_the_geometric_mean_per_period(returns4):
-    # The inequality holds per period. After annualization the two estimators are
-    # not orderable, because the arithmetic figure is scaled linearly while the
-    # geometric one compounds.
     for asset in FOUR_ASSETS:
         series = returns4[asset]
         per_period_geometric = float((1.0 + series).prod() ** (1.0 / len(series)) - 1.0)
@@ -243,9 +225,7 @@ def test_expected_return_estimators_validate_their_arguments(returns4):
         opt.expected_returns(returns4, "shrunk", base="shrunk")
 
 
-# --------------------------------------------------------------------------- #
 # Minimum volatility
-# --------------------------------------------------------------------------- #
 
 def test_minimum_variance_matches_the_two_asset_analytic_solution():
     # With zero correlation, w_A = sigma_B^2 / (sigma_A^2 + sigma_B^2) = 0.8.
@@ -286,7 +266,6 @@ def test_minimum_volatility_beats_comparison_allocations(cov4, mu4):
     result = opt.minimum_volatility(cov4, mu4, constraints)
     equal_weight = pd.Series(0.25, index=FOUR_ASSETS)
     assert result.volatility <= risk.portfolio_volatility(equal_weight, cov4) + 1e-9
-    # Also beat every feasible single-name-tilted comparison portfolio.
     for asset in FOUR_ASSETS:
         tilted = pd.Series(0.20, index=FOUR_ASSETS)
         tilted[asset] = 0.40
@@ -294,7 +273,7 @@ def test_minimum_volatility_beats_comparison_allocations(cov4, mu4):
 
 
 def test_minimum_volatility_ignores_expected_returns(cov4, mu4):
-    """Only the covariance matters, which is the whole point of the control."""
+    """Min-vol depends only on covariance, not expected returns."""
     first = opt.minimum_volatility(cov4, mu4)
     second = opt.minimum_volatility(cov4, mu4 * 10.0 + 0.5)
     third = opt.minimum_volatility(cov4, None)
@@ -302,9 +281,7 @@ def test_minimum_volatility_ignores_expected_returns(cov4, mu4):
     pd.testing.assert_series_equal(first.weights, third.weights)
 
 
-# --------------------------------------------------------------------------- #
 # Maximum Sharpe
-# --------------------------------------------------------------------------- #
 
 def test_maximum_sharpe_matches_the_two_asset_tangency_solution():
     # With a diagonal covariance the tangency weights are proportional to
@@ -337,8 +314,6 @@ def test_maximum_sharpe_dominates_comparison_allocations(cov4, mu4):
 
 
 def test_maximum_sharpe_respects_group_constraints(cov4, mu4):
-    # QQQ has the highest expected return, so an unconstrained solution would
-    # overweight equities; the group cap must bind instead.
     constraints = opt.AllocationConstraints(
         upper_bound=1.0,
         groups=(opt.GroupConstraint("Equities", ("SPY", "QQQ"), maximum=0.30),),
@@ -349,15 +324,12 @@ def test_maximum_sharpe_respects_group_constraints(cov4, mu4):
 
 
 def test_maximum_sharpe_handles_a_degenerate_zero_volatility_case():
-    # A single asset with zero variance cannot produce an infinite Sharpe ratio.
     zero = pd.DataFrame([[0.0]], index=["A"], columns=["A"])
     result = opt.maximum_sharpe(pd.Series({"A": 0.05}), zero, opt.AllocationConstraints(0.0, 1.0))
     assert np.isnan(result.sharpe_ratio)
 
 
-# --------------------------------------------------------------------------- #
 # Target return
-# --------------------------------------------------------------------------- #
 
 def test_target_return_is_achieved_exactly():
     result = opt.target_return_portfolio(MU2, COV2, 0.10, FREE, RF)
@@ -405,9 +377,7 @@ def test_feasible_range_reflects_the_bounds():
     assert high == pytest.approx(0.6 * 0.12 + 0.4 * 0.08, abs=1e-6)
 
 
-# --------------------------------------------------------------------------- #
 # Efficient frontier
-# --------------------------------------------------------------------------- #
 
 def test_frontier_targets_are_ordered_and_start_at_minimum_risk(cov4, mu4):
     constraints = opt.default_constraints(FOUR_ASSETS, use_groups=False)
@@ -467,9 +437,7 @@ def test_frontier_highlights_pick_five_representative_points(cov4, mu4):
     )
 
 
-# --------------------------------------------------------------------------- #
 # Concentration and turnover
-# --------------------------------------------------------------------------- #
 
 def test_concentration_is_exact_for_an_equal_weight_portfolio():
     metrics = opt.concentration_metrics(pd.Series(0.25, index=FOUR_ASSETS))
@@ -512,9 +480,7 @@ def test_full_reallocation_gives_unit_turnover():
     assert opt.turnover({"A": 1.0, "B": 0.0}, {"A": 0.0, "B": 1.0}) == pytest.approx(1.0)
 
 
-# --------------------------------------------------------------------------- #
 # Portfolio metrics and comparison
-# --------------------------------------------------------------------------- #
 
 def test_portfolio_metrics_are_hand_computable():
     metrics = opt.portfolio_metrics({"A": 0.5, "B": 0.5}, MU2, COV2, RF)
@@ -577,9 +543,7 @@ def test_comparison_functions_reject_empty_input(cov4, mu4):
         opt.weight_comparison_table({})
 
 
-# --------------------------------------------------------------------------- #
 # Model risk
-# --------------------------------------------------------------------------- #
 
 def test_perturbing_expected_returns_moves_the_max_sharpe_allocation(cov4, mu4):
     constraints = opt.default_constraints(FOUR_ASSETS, use_groups=False)
@@ -611,7 +575,6 @@ def test_sensitivity_table_covers_every_asset_and_shift(cov4, mu4):
     assert len(table) == len(FOUR_ASSETS) * 2
     assert table.index.names == ["Asset", "Return Shift"]
     assert table["Success"].all()
-    # A raised expected return can never reduce that asset's optimal weight.
     for asset in FOUR_ASSETS:
         assert table.loc[(asset, 0.01), "Weight Change"] >= -opt.CONSTRAINT_TOLERANCE
         assert table.loc[(asset, -0.01), "Weight Change"] <= opt.CONSTRAINT_TOLERANCE
@@ -628,7 +591,6 @@ def test_shrinkage_comparison_shows_min_vol_invariance(returns4, cov4):
     current = pd.Series(0.25, index=FOUR_ASSETS)
     table = opt.shrinkage_comparison(returns4, cov4, current)
     min_vol_rows = table.xs("Min Volatility", level="Objective")
-    # Identical for every return method, because only the covariance matters.
     for column in ("Volatility", "Maximum Weight", "Effective Holdings", "Turnover vs Current"):
         assert min_vol_rows[column].nunique() == 1
     max_sharpe_rows = table.xs("Max Sharpe", level="Objective")
@@ -636,10 +598,6 @@ def test_shrinkage_comparison_shows_min_vol_invariance(returns4, cov4):
 
 
 def test_full_shrinkage_collapses_max_sharpe_onto_minimum_volatility(returns4, cov4):
-    # With alpha = 0 every asset shares one expected return, so maximizing
-    # (mu - rf) / sigma is exactly minimizing sigma. Note this does not
-    # necessarily reduce concentration: the minimum-variance portfolio can be
-    # more concentrated than the tangency portfolio.
     current = pd.Series(0.25, index=FOUR_ASSETS)
     table = opt.shrinkage_comparison(returns4, cov4, current, alpha=0.0)
     shrunk_sharpe = table.loc[("Shrunk", "Max Sharpe")]
@@ -650,9 +608,7 @@ def test_full_shrinkage_collapses_max_sharpe_onto_minimum_volatility(returns4, c
     )
 
 
-# --------------------------------------------------------------------------- #
 # Integration with the risk, stress and simulation engines
-# --------------------------------------------------------------------------- #
 
 def test_risk_comparison_uses_each_portfolio_own_return_series(returns4, cov4):
     weights = pd.Series([0.4, 0.1, 0.4, 0.1], index=FOUR_ASSETS)
@@ -681,7 +637,6 @@ def test_risk_comparison_is_not_a_scaling_of_the_current_portfolio(returns4, cov
         table.loc["Tilted", "Annualized Volatility"]
         / table.loc["Equal", "Annualized Volatility"]
     )
-    # If VaR had been scaled from the current portfolio these ratios would match.
     assert ratio_var != pytest.approx(ratio_vol, abs=1e-6)
 
 
@@ -730,8 +685,6 @@ def test_simulation_comparison_is_reproducible(returns4):
 
 
 def test_simulation_comparison_reflects_the_weights(returns4):
-    # A bond-heavy allocation must simulate a lower loss probability than an
-    # equity-heavy one under the same seed and settings.
     equity = pd.Series([0.5, 0.5, 0.0, 0.0], index=FOUR_ASSETS)
     bonds = pd.Series([0.0, 0.0, 1.0, 0.0], index=FOUR_ASSETS)
     table = opt.optimized_simulation_comparison(
@@ -762,9 +715,7 @@ def test_simulation_comparison_matches_a_direct_phase_four_run(returns4):
     )
 
 
-# --------------------------------------------------------------------------- #
 # Summary and solver discipline
-# --------------------------------------------------------------------------- #
 
 def test_optimization_summary_reports_stable_keys(cov4, mu4):
     current = pd.Series(0.25, index=FOUR_ASSETS)

@@ -1,26 +1,4 @@
-"""Market data engine.
-
-Responsibilities
-----------------
-* Download split/dividend-adjusted daily prices from Yahoo Finance.
-* Validate the download (empty responses, unknown tickers, short histories).
-* Align assets onto a common trading calendar without fabricating prices.
-* Derive daily simple returns.
-
-Missing-data policy
--------------------
-Financial prices are never forward/backward filled here: a filled price
-produces a fabricated 0% return followed by an artificial jump, which
-distorts volatility, drawdown and correlation estimates. Instead the panel is
-truncated to the latest common inception date and any residual date on which
-at least one asset is missing an observation is dropped. Dropped dates are
-reported via :mod:`warnings` so the caller can audit them.
-
-The loader is deliberately split into small pure functions
-(``download_price_history`` / ``align_price_panel`` / ``compute_simple_returns``)
-so later phases (stress testing, Monte Carlo, optimization, factor models,
-Streamlit) can reuse individual stages or inject their own price panels.
-"""
+"""Market data loading and return preparation."""
 
 from __future__ import annotations
 
@@ -49,28 +27,24 @@ __all__ = [
 
 
 class MarketDataError(RuntimeError):
-    """Base class for all market data failures."""
+    """Base market-data error."""
 
 
 class EmptyDownloadError(MarketDataError):
-    """Raised when the provider returns no usable rows."""
+    """Provider returned no usable rows."""
 
 
 class InvalidTickerError(MarketDataError):
-    """Raised when one or more tickers return no price data at all."""
+    """Ticker returned no price data."""
 
 
 class InsufficientHistoryError(MarketDataError):
-    """Raised when the aligned sample is too short to support analytics."""
+    """Aligned sample too short for analytics."""
 
 
 @dataclass(frozen=True)
 class MarketData:
-    """Aligned adjusted prices and the daily simple returns derived from them.
-
-    ``returns`` always has exactly one fewer row than ``prices`` because the
-    first price observation cannot produce a return.
-    """
+    """Aligned prices and daily simple returns (returns has one fewer row)."""
 
     prices: pd.DataFrame
     returns: pd.DataFrame
@@ -81,12 +55,12 @@ class MarketData:
 
     @property
     def start_date(self) -> pd.Timestamp:
-        """First date with a price observation for every asset."""
+        """First common price date."""
         return self.prices.index[0]
 
     @property
     def end_date(self) -> pd.Timestamp:
-        """Last date with a price observation for every asset."""
+        """Last common price date."""
         return self.prices.index[-1]
 
     @property
@@ -99,7 +73,6 @@ class MarketData:
 
 
 def _normalize_tickers(tickers: Iterable[str]) -> list[str]:
-    """Upper-case, strip and de-duplicate tickers while preserving order."""
     seen: dict[str, None] = {}
     for raw in tickers:
         if not isinstance(raw, str) or not raw.strip():
@@ -111,7 +84,6 @@ def _normalize_tickers(tickers: Iterable[str]) -> list[str]:
 
 
 def _extract_price_field(raw: pd.DataFrame, tickers: Sequence[str], price_field: str) -> pd.DataFrame:
-    """Reduce a yfinance download to a ``date x ticker`` panel of one field."""
     if isinstance(raw.columns, pd.MultiIndex):
         available_fields = raw.columns.get_level_values(0).unique()
         if price_field not in available_fields:
@@ -121,7 +93,6 @@ def _extract_price_field(raw: pd.DataFrame, tickers: Sequence[str], price_field:
             )
         panel = raw.xs(price_field, axis=1, level=0)
     elif price_field in raw.columns:
-        # Single-ticker download without a column MultiIndex.
         panel = raw[[price_field]]
         panel.columns = list(tickers[:1])
     else:
@@ -144,7 +115,6 @@ def _cache_path(
 
 
 def _read_cache(path: Path, max_age_days: float) -> pd.DataFrame | None:
-    """Return a cached panel if it exists and is fresh enough."""
     if not path.is_file():
         return None
     age_days = (time.time() - path.stat().st_mtime) / 86_400
@@ -160,25 +130,8 @@ def download_price_history(
     end: str | None = config.DEFAULT_END_DATE,
     price_field: str = config.PRICE_FIELD,
 ) -> pd.DataFrame:
-    """Download an adjusted daily price panel from Yahoo Finance.
-
-    Args:
-        tickers: Symbols to download.
-        start: Inclusive first calendar date (``YYYY-MM-DD``).
-        end: Exclusive last calendar date; ``None`` requests the latest data.
-        price_field: Field to extract. ``Close`` is the adjusted close because
-            the download uses ``auto_adjust=True``.
-
-    Returns:
-        Raw ``date x ticker`` price panel, chronologically sorted. May still
-        contain missing observations; use :func:`align_price_panel` to clean it.
-
-    Raises:
-        EmptyDownloadError: The provider returned no rows.
-        InvalidTickerError: One or more tickers returned no data at all.
-        MarketDataError: The download failed or had an unexpected schema.
-    """
-    import yfinance as yf  # imported lazily so offline tests need no network stack
+    """Download adjusted daily prices from Yahoo Finance."""
+    import yfinance as yf
 
     symbols = _normalize_tickers(tickers)
     try:
@@ -193,7 +146,7 @@ def download_price_history(
             progress=False,
             threads=False,
         )
-    except Exception as exc:  # provider/network failures are surfaced, not swallowed
+    except Exception as exc:
         raise MarketDataError(
             f"Price download failed for {symbols} ({start} to {end or 'latest'}): {exc}"
         ) from exc
@@ -220,24 +173,7 @@ def align_price_panel(
     prices: pd.DataFrame,
     min_observations: int = config.MIN_OBSERVATIONS,
 ) -> pd.DataFrame:
-    """Align assets onto a common trading calendar without filling prices.
-
-    The panel is truncated to the latest asset inception date, then dates with
-    any missing observation are dropped. Non-positive prices are rejected
-    because they cannot produce meaningful simple returns.
-
-    Args:
-        prices: Raw ``date x ticker`` price panel.
-        min_observations: Minimum aligned rows required.
-
-    Returns:
-        Aligned, strictly positive, chronologically sorted price panel.
-
-    Raises:
-        EmptyDownloadError: No dates are shared by all assets.
-        InsufficientHistoryError: Fewer than ``min_observations`` rows remain.
-        MarketDataError: A non-positive price was found.
-    """
+    """Align assets to a common calendar; drop incomplete dates (no fill)."""
     if prices.empty:
         raise EmptyDownloadError("Price panel is empty.")
 
@@ -284,13 +220,7 @@ def align_price_panel(
 
 
 def compute_simple_returns(prices: pd.DataFrame) -> pd.DataFrame:
-    """Compute daily simple returns from an aligned price panel.
-
-    Uses ``P_t / P_{t-1} - 1`` on the aligned calendar, so each return is
-    realized strictly between two consecutive observed prices and no
-    look-ahead or fabricated observation is introduced. The first row is
-    dropped because it has no prior price.
-    """
+    """Daily simple returns ``P_t / P_{t-1} - 1``."""
     if prices.shape[0] < 2:
         raise InsufficientHistoryError(
             "At least two price observations are required to compute returns."
@@ -311,24 +241,7 @@ def load_market_data(
     use_cache: bool = True,
     cache_max_age_days: float = config.CACHE_MAX_AGE_DAYS,
 ) -> MarketData:
-    """Load aligned adjusted prices and daily simple returns.
-
-    Downloads are cached as CSV under ``data/`` keyed by request parameters so
-    repeated runs (and later the Streamlit layer) do not re-hit the provider.
-    A cache older than ``cache_max_age_days`` is refreshed.
-
-    Args:
-        tickers: Symbols to load.
-        start: Inclusive first calendar date.
-        end: Exclusive last calendar date, or ``None`` for the latest data.
-        price_field: Adjusted price field to use.
-        min_observations: Minimum aligned observations required per asset.
-        use_cache: Read from and write to the on-disk cache.
-        cache_max_age_days: Maximum age before a cached panel is re-downloaded.
-
-    Returns:
-        A :class:`MarketData` container with aligned prices and returns.
-    """
+    """Load aligned prices and daily simple returns."""
     symbols = _normalize_tickers(tickers)
     path = _cache_path(symbols, start, end, price_field)
 

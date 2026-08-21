@@ -1,19 +1,4 @@
-"""Terminal demonstration of the portfolio analytics, risk and stress engines.
-
-Loads the default multi-asset portfolio from ``config.py``, downloads adjusted
-market data, and prints performance, asset-level, correlation, tail-risk,
-risk-decomposition, stress-testing, simulation, optimization and factor
-diagnostics. The Streamlit product layer in ``streamlit_app.py`` consumes the
-same functions.
-
-The factor section depends on an external factor source; if it is unreachable the
-report prints a note and continues rather than failing.
-
-Usage:
-    python app.py [--start 2015-01-01] [--end 2025-12-31] [--refresh] [--no-save]
-                  [--portfolio-value 1000000]
-    streamlit run streamlit_app.py
-"""
+"""Terminal report for portfolio risk analytics."""
 
 from __future__ import annotations
 
@@ -34,22 +19,16 @@ from src.data_loader import MarketData, MarketDataError, load_market_data
 
 LINE_WIDTH = 78
 
-#: Reverse-stress illustrations shown in the terminal report.
 QQQ_LOSS_TARGET = -0.10
 EQUITY_LOSS_TARGET = -0.15
 
-#: Placeholder for a contributor that does not exist in a scenario.
 _NONE_LABEL = "n/a"
-
-#: Terminal-friendly abbreviations for the simulation method names.
 _SHORT_METHOD_LABELS = {"Historical Bootstrap": "Bootstrap", "Block Bootstrap": "Block Boot."}
 
-#: Portfolio labels used across every allocation comparison table.
 CURRENT = "Current"
 MIN_VOL = "Min Vol"
 MAX_SHARPE = "Max Sharpe"
 
-#: Scenarios shown in the optimized stress comparison.
 OPTIMIZED_STRESS_SCENARIOS = (
     "Global Equity Crash",
     "Rates +200bp",
@@ -201,7 +180,7 @@ def print_risk_summary(summary: pd.Series) -> None:
         else:
             formatted = _pct(value)
         print(f"  {str(label):<42} {formatted:>12}")
-    print("\n  VaR/CVaR are positive loss magnitudes; volatilities are annualized.")
+    print("\n  VaR/CVaR are positive loss magnitudes; vols are annualized.")
 
 
 def print_risk_contribution(table: pd.DataFrame, portfolio_volatility: float) -> None:
@@ -230,10 +209,9 @@ def print_risk_contribution(table: pd.DataFrame, portfolio_volatility: float) ->
         f"{_pct(float(table['Risk Contribution %'].sum()), 1):>13}"
     )
     print(
-        f"\n  Components sum to portfolio volatility of {_pct(portfolio_volatility)} "
-        "(Euler decomposition)."
+        f"\n  Components sum to portfolio vol {_pct(portfolio_volatility)} (Euler)."
     )
-    print("  Marginal and component figures attribute volatility, not expected return.")
+    print("  Marginal/component figures attribute volatility, not expected return.")
 
 
 def print_tail_risk_comparison(table: pd.DataFrame) -> None:
@@ -307,7 +285,6 @@ def print_worst_scenario_detail(summary: pd.Series) -> None:
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    """Greedy word wrap used for scenario descriptions."""
     words, lines, current = text.split(), [], ""
     for word in words:
         candidate = f"{current} {word}".strip()
@@ -393,10 +370,7 @@ def print_reverse_stress(results: list[pd.Series]) -> None:
             print(f"    Required shock   : {_pct(shock)}  [IMPOSSIBLE: below -100%]")
         print(f"    Check            : implies {_pct(float(result['Implied Portfolio Return']))}")
         print()
-    print(
-        "  Answers depend entirely on which assets are allowed to move: concentrating"
-        "\n  the shock in a small position demands a far more extreme move."
-    )
+    print("  Required shock depends on which assets are allowed to move.")
 
 
 def print_correlation_stress(report: pd.Series) -> None:
@@ -417,10 +391,7 @@ def print_correlation_stress(report: pd.Series) -> None:
     print()
     for label, value in rows:
         print(f"  {label:<34}{value:>12}")
-    print(
-        "\n  This is a volatility statement, not a scenario loss: asset volatilities are"
-        "\n  held fixed and only the correlations change."
-    )
+    print("\n  Volatilities held fixed; only correlations change.")
 
 
 def print_monte_carlo(
@@ -464,8 +435,8 @@ def print_monte_carlo(
     for label, value in path_metrics.items():
         print(f"  {str(label):<44}{_pct(value, 1):>14}")
     print(
-        "\n  VaR and CVaR are terminal-horizon losses over the full simulated period,"
-        "\n  not daily figures. Drawdowns are negative and measured peak to trough."
+        "\n  VaR/CVaR are terminal-horizon losses, not daily."
+        "\n  Drawdowns are peak-to-trough (negative)."
     )
 
 
@@ -475,11 +446,6 @@ def _print_transposed(
     label_width: int = 34,
     signed_rows: frozenset[str] = frozenset(),
 ) -> None:
-    """Print a comparison with metrics as rows and simulation runs as columns.
-
-    ``signed_rows`` names the table rows that hold differences rather than
-    levels, so they are shown with an explicit sign.
-    """
     column_width = (LINE_WIDTH - 2 - label_width) // max(len(table.index), 1)
     header = f"  {'':<{label_width}}" + "".join(
         f"{str(name)[: column_width - 1]:>{column_width}}" for name in table.index
@@ -518,11 +484,8 @@ def print_method_comparison(table: pd.DataFrame) -> None:
         ],
     )
     print(
-        f"\n  Bootstrap resamples whole historical days; Block Boot. resamples"
-        f" {config.MONTE_CARLO_BLOCK_LENGTH}-day blocks."
-        "\n  Identical paths, horizon, starting value and seed, so differences reflect"
-        "\n  the return model alone. The bootstraps resample realized days and inherit"
-        "\n  the sample's fat tails; the Gaussian model does not."
+        f"\n  Bootstrap: whole days; Block Boot.: {config.MONTE_CARLO_BLOCK_LENGTH}-day blocks."
+        "\n  Same paths/horizon/seed; differences reflect the return model only."
     )
 
 
@@ -540,9 +503,7 @@ def print_regime_comparison(table: pd.DataFrame) -> None:
         signed_rows=frozenset({"Change"}),
     )
     print(
-        "\n  Both regimes share one seed and one mean vector, so the change is caused"
-        "\n  only by correlations rising toward the stress target. The Change column"
-        "\n  shows stressed minus baseline."
+        "\n  Same seed and mean; Change is stressed minus baseline from higher correlations."
     )
 
 
@@ -560,10 +521,8 @@ def print_optimization(table: pd.DataFrame) -> None:
         ],
     )
     print(
-        "\n  Expected returns are annualized historical geometric estimates and the"
-        "\n  Sharpe ratios are mean-variance ratios built from them, so they differ"
-        "\n  from the realized Sharpe reported earlier. Turnover is one-way:"
-        "\n  0.5 * sum of absolute weight changes."
+        "\n  Expected returns are geometric annualized history (Sharpe differs from realized)."
+        "\n  Turnover is one-way: 0.5 * sum |Δw|."
     )
 
 
@@ -616,12 +575,11 @@ def print_return_model_sensitivity(
         )
     min_vol = methods.xs("Min Volatility", level="Objective")
     print(
-        f"\n  Minimum volatility is {_pct(float(min_vol['Volatility'].iloc[0]))} under every"
-        " estimator: it uses\n  only the covariance matrix, so expected-return model risk"
-        " cannot touch it."
+        f"\n  Min vol is {_pct(float(min_vol['Volatility'].iloc[0]))} under every estimator"
+        " (covariance only)."
     )
 
-    print("\n  Turnover from the baseline optimum after shifting one expected return")
+    print("\n  Turnover after shifting one expected return")
     shifts = sorted(sensitivity.index.get_level_values("Return Shift").unique())
     header = f"  {'Asset':<10}" + "".join(f"{_pct(s, 0):>13}" for s in shifts)
     print(header)
@@ -634,10 +592,7 @@ def print_return_model_sensitivity(
         print(f"  {str(asset):<10}{cells}")
     worst = sensitivity["Turnover vs Baseline"].max()
     print(
-        f"\n  A {_pct(max(abs(s) for s in shifts), 0)} change in one asset's expected return"
-        f" moves up to {_pct(worst, 1)} of the\n  portfolio. That is far smaller than the"
-        " standard error of a historical mean,\n  so these weights carry much less precision"
-        " than they appear to."
+        f"\n  A {_pct(max(abs(s) for s in shifts), 0)} μ shift moves up to {_pct(worst, 1)} of capital."
     )
 
 
@@ -659,10 +614,7 @@ def print_optimized_risk(table: pd.DataFrame, confidence: float) -> None:
             f"{str(row['Largest Risk Contributor']):>15}"
             f"{_pct(row['Largest Risk Contribution %'], 0):>8}"
         )
-    print(
-        "\n  VaR and CVaR are measured on each allocation's own historical return"
-        "\n  series, not scaled from the current portfolio."
-    )
+    print("\n  VaR/CVaR from each allocation's own historical returns.")
 
 
 def print_optimized_stress(table: pd.DataFrame, portfolios: list[str]) -> None:
@@ -673,18 +625,14 @@ def print_optimized_stress(table: pd.DataFrame, portfolios: list[str]) -> None:
     for scenario, row in table.iterrows():
         cells = "".join(f"{_pct(row[name]):>16}" for name in portfolios)
         print(f"  {str(scenario):<28}{cells}")
-    print(
-        "\n  Deterministic scenario returns from the stress engine: the weighted sum"
-        "\n  of assumed asset shocks, with no probability attached."
-    )
+    print("\n  Deterministic scenario returns (weighted asset shocks; no probability).")
 
 
 def print_optimized_simulation(table: pd.DataFrame, n_paths: int, confidence: float) -> None:
     _section("Optimized portfolio Monte Carlo")
     print(
-        f"  {n_paths:,} paths per portfolio, identical horizon and seed."
-        " Fewer paths than the\n  headline simulation because three portfolios are run,"
-        " so sampling error is\n  larger and small differences should not be over-read.\n"
+        f"  {n_paths:,} paths per portfolio, same horizon and seed"
+        " (fewer paths than the headline run).\n"
     )
     _print_transposed(
         table,
@@ -719,10 +667,8 @@ def print_factor_exposure(
             f"{_num(float(share[leader]), 3):>12}"
         )
     print(
-        f"\n  Model R-squared {_pct(summary['Model R-Squared'], 1)} on the portfolio's own"
-        f" excess return series.\n  Betas are exposures to daily factor returns, aggregated"
-        " as the weighted sum of\n  asset betas. Excess returns are net of the daily"
-        " risk-free rate supplied with\n  the factor data."
+        f"\n  Model R² {_pct(summary['Model R-Squared'], 1)} on portfolio excess returns."
+        "\n  Betas are weighted sums of asset betas vs daily factor returns."
     )
 
 
@@ -739,9 +685,8 @@ def print_asset_loadings(table: pd.DataFrame, factors: list[str]) -> None:
             f"{_num(row['R-Squared'], 3):>8}{_pct(row['Residual Volatility'], 1):>11}"
         )
     print(
-        "\n  Alpha is annualized from the daily intercept and is not a skill claim: for"
-        "\n  an asset the factors barely explain, everything the model cannot price"
-        "\n  lands in alpha and residual volatility. Residual volatility is annualized."
+        "\n  Alpha is annualized daily intercept (not a skill claim)."
+        "\n  Residual volatility is annualized."
     )
 
 
@@ -771,7 +716,7 @@ def print_factor_risk_decomposition(
             f"{_pct(row['Risk Contribution %'], 1):>10}"
         )
 
-    print("\n  Idiosyncratic risk by asset (after factors are stripped out)")
+    print("\n  Idiosyncratic risk by asset")
     header = f"  {'Asset':<10}{'Weight':>10}{'Resid Vol':>12}{'Variance Share':>17}"
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -782,9 +727,7 @@ def print_factor_risk_decomposition(
             f"{_pct(row['Variance Contribution %'], 1):>17}"
         )
     print(
-        "\n  Shares are of variance, which is what decomposes additively. Factor"
-        "\n  contributions use the Euler method because the factors are correlated,"
-        "\n  so squared-beta contributions would not reconcile to systematic risk."
+        "\n  Shares are of variance. Factor contributions use Euler (factors are correlated)."
     )
 
 
@@ -808,9 +751,8 @@ def print_factor_stability(stability: pd.DataFrame, market_factor: str, window: 
         stability.loc[widest, "Rolling Max"] - stability.loc[widest, "Rolling Min"]
     )
     print(
-        f"\n  {market_factor} beta is shown per asset; the widest rolling range across all"
-        f"\n  asset-factor pairs is {widest[0]} on {widest[1]}, spanning {_num(spread, 2)} beta"
-        " units. A single\n  full-sample beta hides that much variation."
+        f"\n  Widest rolling {market_factor} range: {widest[0]} on {widest[1]}"
+        f" (span {_num(spread, 2)})."
     )
 
 
@@ -842,10 +784,8 @@ def print_factor_stress(
             f"{_label(row['Largest Hedge / Offset']):>9}"
         )
     print(
-        "\n  Asset shocks are the linear factor approximation B * factor shocks, priced"
-        "\n  through the stress engine. Alpha and residual moves are set to zero, and"
-        "\n  betas estimated on daily data are assumed to hold at crisis magnitudes."
-        "\n  These are internally consistent assumptions, not forecasts."
+        "\n  Asset shocks = B × factor shocks via the stress engine"
+        " (alpha/residual = 0)."
     )
 
 
@@ -898,9 +838,7 @@ def print_covariance_models(table: pd.DataFrame, shrinkage_lambda: float) -> Non
             f"{row['Minimum Eigenvalue']:>16.2e}{row['Frobenius Difference']:>16.4f}"
         )
     print(
-        "\n  Differences are measured against the sample covariance. A lower condition"
-        "\n  number means an optimizer can amplify estimation error less when it"
-        "\n  effectively inverts the matrix; none of the three is objectively correct."
+        "\n  Diffs vs sample covariance. Lower condition number = less optimizer leverage of noise."
     )
 
 
@@ -935,11 +873,8 @@ def print_optimization_under_covariance(table: pd.DataFrame, reference: str) -> 
         for index, violations in table["Violations"].dropna().items():
             print(f"  [constraint violation] {index}: {violations}")
     print(
-        "\n  'Own Vol' grades each solution with the covariance that produced it, which"
-        f"\n  flatters a model that understates risk. The {reference} column re-scores every"
-        "\n  solution on one yardstick, and there the sample-covariance portfolios win by"
-        "\n  construction, because that is the matrix they were fitted to. Covariance"
-        "\n  choice moves the allocation as much as expected-return choice did in the optimization section."
+        "\n  Own Vol uses each model's covariance; the yardstick column re-scores all"
+        f" on {reference}."
     )
 
 
@@ -954,20 +889,12 @@ def print_factor_model_comparison(table: pd.DataFrame) -> None:
             f"{_num(row['Portfolio R-Squared'], 3):>14}{_num(row['Mean Asset R-Squared'], 3):>15}"
         )
     print(
-        "\n  The proxy set explains more because its factors are liquid instruments that"
-        "\n  overlap economically with the holdings, not because it is a better risk"
-        "\n  model. Academic factors are long-short research portfolios and are the only"
-        "\n  set here with a risk-premium interpretation."
+        "\n  Proxy R² is higher because factors overlap holdings; academic factors"
+        "\n  are the research long-short set."
     )
 
 
 def _library_for(tickers: list[str]) -> list[stress.Scenario]:
-    """Adapt the predefined library to the configured universe.
-
-    The library is written for the default ETF universe. If the portfolio has
-    been reconfigured, shocks for instruments that are no longer held are dropped
-    explicitly and any newly held asset is left unshocked.
-    """
     universe = {t.strip().upper() for t in tickers}
     library_assets = {asset for s in stress.PREDEFINED_SCENARIOS for asset in s.assets}
     if universe == library_assets:
@@ -986,11 +913,7 @@ def _factor_model_comparison(
     academic: fx.FactorModel,
     use_cache: bool,
 ) -> pd.DataFrame | None:
-    """Compare the academic factor set with the tradeable proxy set.
-
-    The proxy set needs its own download, so a failure here degrades to ``None``
-    and drops one table instead of the whole factor section.
-    """
+    """Return None if proxy factors cannot be loaded."""
     try:
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -1250,9 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg, market, current, factor_model, use_cache=not args.refresh
         )
 
-        # The sample covariance is recomputed on the factor sample's dates so the
-        # comparison is like-for-like: the published factors lag the price data,
-        # and a matrix estimated over a longer window is a different estimate.
+        # Align sample cov to the factor sample window (factors lag prices).
         aligned_cov = pf.covariance_matrix(
             market.returns.loc[factor_model.factors.index], annualize=True
         )
@@ -1366,8 +1287,7 @@ def main(argv: list[str] | None = None) -> int:
                 "worst_scenario_contribution": worst_contribution,
                 "historical_stress_events": events,
                 "correlation_stress": correlation_stress,
-                # Summary statistics only; the raw simulated paths are far too
-                # large to export and are not needed downstream.
+                # Export summaries only (full paths are too large).
                 "monte_carlo_summary": pd.concat(
                     [simulation_stats, simulation_drawdowns, simulation_paths]
                 ),

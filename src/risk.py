@@ -1,43 +1,4 @@
-"""Portfolio risk engine: tail risk, risk decomposition and rolling analytics.
-
-Sign convention
----------------
-Value at Risk and Expected Shortfall are returned as **positive loss
-magnitudes**. If the empirical 5th percentile daily return is ``-0.0180``, the
-95% VaR is reported as ``+0.0180`` (a 1.80% loss). A *negative* reported value
-is meaningful rather than an error: it means the tail quantile itself was a
-gain, so no loss is expected at that confidence level. Values are never
-clipped to zero.
-
-Estimators
-----------
-Historical VaR
-    Empirical quantile of the realized return distribution at ``1 - c``, using
-    linear interpolation between order statistics (the numpy/pandas default).
-    No distributional assumption is made.
-Historical CVaR / Expected Shortfall
-    Mean of every observation at or below the VaR threshold,
-    ``-mean(r | r <= q_{1-c})``. Observations exactly equal to the threshold are
-    included, which makes the estimate marginally more conservative under ties
-    and guarantees ``CVaR >= VaR`` by construction.
-Gaussian VaR / Expected Shortfall
-    Closed-form normal quantile and conditional-tail expectation using the
-    sample mean and standard deviation. Quantiles come from
-    ``scipy.stats.norm``; no z-scores are hard-coded.
-Multi-day horizons
-    The historical estimators compound *actual* overlapping windows,
-    ``R_t = prod_{j=t-h+1..t}(1 + r_j) - 1``, and take the empirical quantile of
-    that distribution. They deliberately do **not** use square-root-of-time
-    scaling. The Gaussian estimators do scale (``mu * h`` and
-    ``sigma * sqrt(h)``), which is valid only under IID normal returns.
-Risk decomposition
-    Euler decomposition of volatility: because ``sigma_p`` is homogeneous of
-    degree one in the weights, ``sum_i w_i * d(sigma_p)/d(w_i) = sigma_p``
-    exactly. This attributes *volatility*, not expected return.
-
-Every window-based statistic is trailing: the value dated ``t`` uses only
-observations up to and including ``t``.
-"""
+"""Portfolio risk metrics."""
 
 from __future__ import annotations
 
@@ -75,16 +36,13 @@ __all__ = [
     "risk_summary",
 ]
 
-#: Relative tolerance used when checking covariance symmetry.
+# Relative tolerance for covariance symmetry checks.
 _SYMMETRY_TOLERANCE = 1e-8
 
 
-# --------------------------------------------------------------------------- #
 # Validation helpers
-# --------------------------------------------------------------------------- #
 
 def _validate_confidence(confidence: float) -> float:
-    """Validate a confidence level in the open interval (0, 1)."""
     if not isinstance(confidence, (int, float, np.floating)) or isinstance(confidence, bool):
         raise ValueError(f"Confidence must be a number, got {confidence!r}.")
     value = float(confidence)
@@ -94,7 +52,6 @@ def _validate_confidence(confidence: float) -> float:
 
 
 def _validate_horizon(horizon: int) -> int:
-    """Validate a risk horizon expressed in trading periods."""
     if isinstance(horizon, bool) or not isinstance(horizon, (int, np.integer)):
         raise ValueError(f"Horizon must be a positive integer, got {horizon!r}.")
     if horizon < 1:
@@ -103,17 +60,10 @@ def _validate_horizon(horizon: int) -> int:
 
 
 def _min_observations_for_confidence(confidence: float) -> int:
-    """Smallest sample in which the ``1 - c`` tail can hold one observation."""
     return int(np.ceil(1.0 / (1.0 - confidence)))
 
 
 def _require_tail_capacity(n_observations: int, confidence: float) -> None:
-    """Ensure a sample is large enough to populate the ``1 - c`` tail.
-
-    A sample of ``n`` observations places on average ``n * (1 - c)`` points in
-    the tail, so at least ``ceil(1 / (1 - c))`` observations are required for the
-    estimate to rest on any realized tail data at all.
-    """
     required = _min_observations_for_confidence(confidence)
     if n_observations < required:
         raise ValueError(
@@ -123,7 +73,6 @@ def _require_tail_capacity(n_observations: int, confidence: float) -> None:
 
 
 def _validate_window(window: int, n_observations: int) -> int:
-    """Validate a rolling window length against the available sample."""
     if isinstance(window, bool) or not isinstance(window, (int, np.integer)):
         raise ValueError(f"Window must be a positive integer, got {window!r}.")
     if window < 2:
@@ -136,13 +85,7 @@ def _validate_window(window: int, n_observations: int) -> int:
 
 
 def validate_covariance(covariance: pd.DataFrame) -> pd.DataFrame:
-    """Validate a covariance matrix: square, labelled, finite, symmetric.
-
-    Raises:
-        TypeError: ``covariance`` is not a DataFrame.
-        ValueError: Non-square, mismatched labels, non-finite entries,
-            asymmetry beyond tolerance, or a negative variance on the diagonal.
-    """
+    """Validate a square, finite, symmetric covariance matrix."""
     if not isinstance(covariance, pd.DataFrame):
         raise TypeError(f"Covariance must be a pandas DataFrame, got {type(covariance)!r}.")
     if covariance.empty:
@@ -172,38 +115,26 @@ def _align_weights_to_covariance(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
     covariance: pd.DataFrame,
 ) -> tuple[pd.Series, pd.DataFrame]:
-    """Validate weights and covariance jointly and align them to one ordering."""
     cov = validate_covariance(covariance)
     w = pf.validate_weights(weights, assets=cov.index)
     return w, cov.loc[w.index, w.index]
 
 
-# --------------------------------------------------------------------------- #
 # Tail risk
-# --------------------------------------------------------------------------- #
 
 def _empirical_quantile(values: np.ndarray, confidence: float) -> float:
-    """Lower-tail empirical quantile at ``1 - confidence`` (linear interpolation)."""
     return float(np.quantile(values, 1.0 - confidence, method="linear"))
 
 
 def historical_var_from_array(values: np.ndarray, confidence: float) -> float:
-    """Historical VaR kernel: negated empirical lower-tail quantile.
-
-    Operates on a bare array so any empirical return sample can reuse it,
-    including simulated terminal-horizon distributions.
-    """
+    """Historical VaR: positive loss magnitude (negated lower-tail quantile)."""
     confidence = _validate_confidence(confidence)
     _require_tail_capacity(values.size, confidence)
     return -_empirical_quantile(values, confidence)
 
 
 def historical_cvar_from_array(values: np.ndarray, confidence: float) -> float:
-    """Historical CVaR kernel: negated mean of the observations in the tail.
-
-    Operates on a bare array so any empirical return sample can reuse it,
-    including simulated terminal-horizon distributions.
-    """
+    """Historical CVaR: positive loss magnitude (negated mean of tail)."""
     confidence = _validate_confidence(confidence)
     _require_tail_capacity(values.size, confidence)
     threshold = _empirical_quantile(values, confidence)
@@ -218,22 +149,7 @@ def historical_cvar_from_array(values: np.ndarray, confidence: float) -> float:
 def overlapping_horizon_returns(
     returns: pd.Series | pd.DataFrame, horizon: int
 ) -> pd.Series:
-    """Compound daily returns into overlapping multi-period returns.
-
-    ``R_t = prod_{j = t-h+1..t} (1 + r_j) - 1``, dated at the **end** of each
-    window so the value at ``t`` uses only information available at ``t``. The
-    result therefore has ``n - h + 1`` observations and no look-ahead bias.
-
-    Args:
-        returns: Daily simple returns.
-        horizon: Window length in trading periods; ``1`` returns the input.
-
-    Returns:
-        Compounded returns indexed by window end date.
-
-    Raises:
-        ValueError: Invalid horizon, or a horizon longer than the sample.
-    """
+    """Overlapping compounded multi-period returns dated at window end."""
     series = pf.validate_return_series(returns)
     h = _validate_horizon(horizon)
     if h == 1:
@@ -254,23 +170,7 @@ def historical_var(
     confidence: float = config.VAR_CONFIDENCE_95,
     horizon: int = config.RISK_HORIZON_SHORT,
 ) -> float:
-    """Historical (non-parametric) Value at Risk as a positive loss magnitude.
-
-    For ``horizon > 1`` the empirical distribution of actual overlapping
-    compounded returns is used rather than square-root-of-time scaling.
-
-    Args:
-        returns: Daily simple returns.
-        confidence: Confidence level, e.g. ``0.95``.
-        horizon: Risk horizon in trading days.
-
-    Returns:
-        Loss magnitude at the given confidence, in return units.
-
-    Raises:
-        ValueError: Invalid confidence or horizon, non-finite returns, or a
-            sample too small to populate the tail.
-    """
+    """Historical VaR as a positive loss magnitude (overlapping windows if horizon > 1)."""
     c = _validate_confidence(confidence)
     horizon_returns = overlapping_horizon_returns(returns, horizon)
     return historical_var_from_array(horizon_returns.to_numpy(), c)
@@ -281,13 +181,7 @@ def historical_cvar(
     confidence: float = config.VAR_CONFIDENCE_95,
     horizon: int = config.RISK_HORIZON_SHORT,
 ) -> float:
-    """Historical Expected Shortfall (CVaR) as a positive loss magnitude.
-
-    The average return across observations at or below the VaR threshold,
-    negated. Because the tail always includes the threshold observation(s), the
-    result is never NaN for a valid sample and is always at least as severe as
-    :func:`historical_var`.
-    """
+    """Historical CVaR as a positive loss magnitude."""
     c = _validate_confidence(confidence)
     horizon_returns = overlapping_horizon_returns(returns, horizon)
     return historical_cvar_from_array(horizon_returns.to_numpy(), c)
@@ -296,7 +190,6 @@ def historical_cvar(
 def _gaussian_moments(
     returns: pd.Series | pd.DataFrame, horizon: int, include_mean: bool
 ) -> tuple[float, float]:
-    """Horizon-scaled mean and standard deviation under the IID assumption."""
     series = pf.validate_return_series(returns)
     if len(series) < 2:
         raise ValueError("At least two observations are required to estimate volatility.")
@@ -312,24 +205,7 @@ def gaussian_var(
     horizon: int = config.RISK_HORIZON_SHORT,
     include_mean: bool = True,
 ) -> float:
-    """Parametric Gaussian Value at Risk as a positive loss magnitude.
-
-    ``VaR = -(mu_h + z_{1-c} * sigma_h)`` where ``z`` is the standard normal
-    quantile from ``scipy.stats.norm``, ``mu_h = mu * h`` and
-    ``sigma_h = sigma * sqrt(h)``.
-
-    Square-root-of-time scaling assumes returns are independent and identically
-    distributed normal variables. Compare with :func:`historical_var`, which
-    makes no distributional assumption and, at multi-day horizons, uses actual
-    compounded windows.
-
-    Args:
-        returns: Daily simple returns.
-        confidence: Confidence level, e.g. ``0.95``.
-        horizon: Risk horizon in trading days.
-        include_mean: Include the sample drift term. Set ``False`` for the
-            zero-drift convention common in short-horizon regulatory reporting.
-    """
+    """Gaussian VaR as a positive loss magnitude (``mu*h``, ``sigma*sqrt(h)``)."""
     c = _validate_confidence(confidence)
     mean, sigma = _gaussian_moments(returns, horizon, include_mean)
     return float(-(mean + norm.ppf(1.0 - c) * sigma))
@@ -341,14 +217,7 @@ def gaussian_cvar(
     horizon: int = config.RISK_HORIZON_SHORT,
     include_mean: bool = True,
 ) -> float:
-    """Analytical Gaussian Expected Shortfall as a positive loss magnitude.
-
-    For ``X ~ N(mu, sigma^2)`` and ``alpha = 1 - c``, the conditional
-    expectation below the ``alpha`` quantile is
-    ``E[X | X <= q_alpha] = mu - sigma * phi(z_alpha) / alpha``, so
-    ``ES = sigma * phi(z_alpha) / alpha - mu`` where ``phi`` is the standard
-    normal density and ``z_alpha = Phi^{-1}(alpha)``.
-    """
+    """Gaussian Expected Shortfall as a positive loss magnitude."""
     c = _validate_confidence(confidence)
     mean, sigma = _gaussian_moments(returns, horizon, include_mean)
     alpha = 1.0 - c
@@ -363,17 +232,7 @@ def tail_risk_table(
     ),
     horizons: Sequence[int] = (config.RISK_HORIZON_SHORT, config.RISK_HORIZON_LONG),
 ) -> pd.DataFrame:
-    """Compare historical and Gaussian tail risk across confidences and horizons.
-
-    All figures are positive loss magnitudes. The ``Gaussian Scaled`` flag marks
-    rows where the Gaussian numbers rely on square-root-of-time scaling while
-    the historical numbers use actual compounded windows.
-
-    Returns:
-        DataFrame with one row per (confidence, horizon) pair and columns
-        ``Historical VaR``, ``Historical CVaR``, ``Gaussian VaR``,
-        ``Gaussian CVaR``, ``Observations``, ``Gaussian Scaled``.
-    """
+    """Historical vs Gaussian VaR/CVaR across confidences and horizons."""
     series = pf.validate_return_series(returns)
     if not len(confidence_levels) or not len(horizons):
         raise ValueError("At least one confidence level and one horizon are required.")
@@ -406,9 +265,7 @@ def tail_risk_table(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Covariance-based risk and its decomposition
-# --------------------------------------------------------------------------- #
+# Covariance risk
 
 def portfolio_variance(
     weights: Mapping[str, float] | pd.Series | Sequence[float],
@@ -416,16 +273,7 @@ def portfolio_variance(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """Portfolio variance ``w' Sigma w``.
-
-    The result carries the frequency of ``covariance``. Set ``annualize=True``
-    only when ``covariance`` is per-period (daily); the variance is then scaled
-    by ``periods_per_year``.
-
-    Raises:
-        ValueError: Invalid weights/covariance, or a materially negative
-            variance (which indicates a non-PSD covariance matrix).
-    """
+    """Portfolio variance ``w' Sigma w`` (optional daily→annual scale)."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive.")
     w, cov = _align_weights_to_covariance(weights, covariance)
@@ -446,12 +294,7 @@ def portfolio_volatility(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """Portfolio volatility ``sqrt(w' Sigma w)`` at the frequency of ``covariance``.
-
-    With ``annualize=True`` a daily covariance matrix is scaled by
-    ``periods_per_year`` before the square root, matching the project's
-    252-trading-day convention.
-    """
+    """Portfolio volatility ``sqrt(w' Sigma w)`` at covariance frequency."""
     return float(
         np.sqrt(portfolio_variance(weights, covariance, annualize, periods_per_year))
     )
@@ -463,16 +306,7 @@ def marginal_contribution_to_risk(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Marginal contribution to portfolio volatility, ``(Sigma w)_i / sigma_p``.
-
-    This is the partial derivative of portfolio volatility with respect to
-    asset ``i``'s weight. Values are signed: a negative marginal contribution
-    means adding the asset *reduces* portfolio volatility, and is preserved.
-
-    Raises:
-        ValueError: Portfolio volatility is zero, leaving the derivative
-            undefined.
-    """
+    """Marginal contribution to volatility ``(Sigma w)_i / sigma_p`` (signed)."""
     w, cov = _align_weights_to_covariance(weights, covariance)
     scale = periods_per_year if annualize else 1
     sigma_p = portfolio_volatility(w, cov, annualize, periods_per_year)
@@ -490,11 +324,7 @@ def component_contribution_to_risk(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Component contribution to volatility, ``CCR_i = w_i * MCR_i``.
-
-    By Euler's theorem for the homogeneous function ``sigma_p(w)``, these
-    components sum exactly to portfolio volatility.
-    """
+    """Component risk ``w_i * MCR_i``; sums to portfolio volatility."""
     table = risk_contributions(weights, covariance, annualize, periods_per_year)
     return table["Component Contribution to Risk"]
 
@@ -505,15 +335,7 @@ def risk_contributions(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.DataFrame:
-    """Full volatility decomposition per asset.
-
-    Returns:
-        DataFrame indexed by asset with columns ``Weight``,
-        ``Marginal Contribution to Risk``, ``Component Contribution to Risk``
-        and ``Risk Contribution %``. Components sum to portfolio volatility and
-        percentages sum to 1. Signs are preserved: an asset that hedges the
-        portfolio shows a negative contribution.
-    """
+    """Euler volatility decomposition per asset (signs preserved)."""
     w, cov = _align_weights_to_covariance(weights, covariance)
     sigma_p = portfolio_volatility(w, cov, annualize, periods_per_year)
     marginal = marginal_contribution_to_risk(w, cov, annualize, periods_per_year)
@@ -534,24 +356,7 @@ def risk_contribution_table(
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
     sort_descending: bool = True,
 ) -> pd.DataFrame:
-    """User-facing annualized risk decomposition table.
-
-    Standalone volatilities are taken as the square root of the annualized
-    covariance diagonal, so they are estimated from exactly the same sample as
-    the decomposition and reconcile with
-    :func:`portfolio.asset_annualized_volatility`.
-
-    Args:
-        asset_returns: ``date x asset`` matrix of daily simple returns.
-        weights: Portfolio weights covering the same assets.
-        periods_per_year: Annualization convention.
-        sort_descending: Sort by ``Risk Contribution %`` descending.
-
-    Returns:
-        DataFrame with ``Weight``, ``Annualized Standalone Volatility``,
-        ``Marginal Contribution to Risk``, ``Component Contribution to Risk``
-        and ``Risk Contribution %``.
-    """
+    """Annualized risk decomposition with standalone volatilities."""
     frame = pf.validate_return_frame(asset_returns)
     annual_cov = pf.covariance_matrix(frame, annualize=True, periods_per_year=periods_per_year)
     table = risk_contributions(weights, annual_cov)
@@ -573,24 +378,7 @@ def diversification_metrics(
     annualize: bool = False,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Diversification diagnostics derived from the covariance matrix.
-
-    * ``Weighted Average Standalone Volatility`` = ``sum_i w_i * sigma_i``, the
-      volatility of a portfolio whose assets were perfectly correlated.
-    * ``Portfolio Volatility`` = ``sqrt(w' Sigma w)``.
-    * ``Diversification Ratio`` = weighted average / portfolio volatility. It
-      equals 1 when all correlations are 1 and rises as correlations fall.
-    * ``Diversification Benefit`` = weighted average - portfolio volatility, the
-      volatility avoided by imperfect correlation, in volatility units. This is
-      the difference form of the same two quantities rather than a new metric,
-      so it is directly interpretable (e.g. "3.5 percentage points of
-      annualized volatility avoided").
-
-    Standalone volatilities come from the covariance diagonal, keeping the
-    numerator and denominator on the same estimate and frequency. With long-only
-    weights the ratio is bounded below by 1; it is not bounded when short
-    positions are present, which is why the raw value is reported unclipped.
-    """
+    """Diversification ratio and benefit from the covariance matrix."""
     w, cov = _align_weights_to_covariance(weights, covariance)
     scale = periods_per_year if annualize else 1
     standalone = pd.Series(
@@ -609,22 +397,14 @@ def diversification_metrics(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Rolling analytics
-# --------------------------------------------------------------------------- #
 
 def rolling_volatility(
     returns: pd.Series | pd.DataFrame,
     window: int = config.ROLLING_WINDOW,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Trailing annualized volatility over a fixed window.
-
-    The first ``window - 1`` dates are ``NaN`` by construction: a trailing
-    estimate cannot exist before a full window of history, and no partial
-    window is used. Matches :func:`portfolio.annualized_volatility` computed on
-    the same window.
-    """
+    """Trailing annualized volatility over a fixed window."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive.")
     series = pf.validate_return_series(returns)
@@ -639,12 +419,7 @@ def rolling_sharpe(
     risk_free_rate: float = config.RISK_FREE_RATE,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Trailing annualized Sharpe ratio over a fixed window.
-
-    Uses the same geometrically de-annualized risk-free rate and the same
-    excess-return construction as :func:`portfolio.sharpe_ratio`. Windows with
-    zero excess-return volatility yield ``NaN`` because the ratio is undefined.
-    """
+    """Trailing annualized Sharpe over a fixed window."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive.")
     series = pf.validate_return_series(returns)
@@ -662,7 +437,7 @@ def rolling_var(
     window: int = config.ROLLING_WINDOW,
     confidence: float = config.VAR_CONFIDENCE_95,
 ) -> pd.Series:
-    """Trailing historical VaR (positive loss magnitude) over a fixed window."""
+    """Trailing historical VaR (positive loss magnitude)."""
     series = pf.validate_return_series(returns)
     c = _validate_confidence(confidence)
     w = _validate_window(window, len(series))
@@ -678,7 +453,7 @@ def rolling_cvar(
     window: int = config.ROLLING_WINDOW,
     confidence: float = config.VAR_CONFIDENCE_95,
 ) -> pd.Series:
-    """Trailing historical CVaR (positive loss magnitude) over a fixed window."""
+    """Trailing historical CVaR (positive loss magnitude)."""
     series = pf.validate_return_series(returns)
     c = _validate_confidence(confidence)
     w = _validate_window(window, len(series))
@@ -696,11 +471,7 @@ def rolling_risk_analytics(
     risk_free_rate: float = config.RISK_FREE_RATE,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.DataFrame:
-    """Assemble the rolling risk series into one time-indexed frame.
-
-    Warm-up rows (the first ``window - 1`` dates) are dropped so every returned
-    row is a fully populated trailing estimate.
-    """
+    """Trailing volatility, Sharpe, VaR, and CVaR in one frame."""
     series = pf.validate_return_series(returns)
     w = _validate_window(window, len(series))
     frame = pd.DataFrame(
@@ -716,9 +487,7 @@ def rolling_risk_analytics(
     return frame.iloc[w - 1 :]
 
 
-# --------------------------------------------------------------------------- #
 # Summary
-# --------------------------------------------------------------------------- #
 
 def risk_summary(
     asset_returns: pd.DataFrame,
@@ -730,23 +499,7 @@ def risk_summary(
     horizon_long: int = config.RISK_HORIZON_LONG,
     periods_per_year: int = config.TRADING_DAYS_PER_YEAR,
 ) -> pd.Series:
-    """Headline risk metrics for a portfolio, ready for dashboard KPI cards.
-
-    One-day historical VaR and CVaR are reported at every confidence level in
-    ``confidence_levels``; the multi-day and Gaussian figures use the first
-    (primary) level. All VaR/CVaR figures are positive loss magnitudes;
-    volatilities are annualized.
-
-    Args:
-        asset_returns: ``date x asset`` matrix of daily simple returns.
-        weights: Portfolio weights covering the same assets.
-        confidence_levels: Confidence levels, primary level first.
-        horizon_long: Multi-day horizon in trading days.
-        periods_per_year: Annualization convention.
-
-    Returns:
-        Series with stable, descriptive field names.
-    """
+    """Headline portfolio risk metrics for KPI display."""
     frame = pf.validate_return_frame(asset_returns)
     w = pf.validate_weights(weights, assets=frame.columns)
     if not len(confidence_levels):

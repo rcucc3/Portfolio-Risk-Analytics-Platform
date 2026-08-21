@@ -1,9 +1,4 @@
-"""Phase 8 numerical reconciliation audit.
-
-One offline walk-through of the core engine invariants. Detailed unit tests
-already cover each identity; this module checks that they still hold when the
-engines are wired together on a single synthetic book.
-"""
+"""Tests for cross-engine numerical invariants."""
 
 from __future__ import annotations
 
