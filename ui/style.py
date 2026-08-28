@@ -37,9 +37,20 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 [data-testid="stSidebar"] {
   background: #FBFCFD;
   border-right: 1px solid var(--prp-border);
-}
-[data-testid="stSidebar"] * {
   font-family: var(--prp-font);
+}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] textarea,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+  font-family: var(--prp-font);
+}
+[data-testid="stIconMaterial"] {
+  font-family: "Material Symbols Rounded" !important;
+  font-feature-settings: "liga" !important;
+  -webkit-font-feature-settings: "liga" !important;
 }
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
   font-size: 12px !important;
