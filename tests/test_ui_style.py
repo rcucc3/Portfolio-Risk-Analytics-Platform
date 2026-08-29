@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
 from ui.charts import apply_chart_theme, path_percentile_bands
 from ui.style import insight_cards_from_metrics, kpi_card, section_header
@@ -63,3 +67,43 @@ def test_apply_chart_theme_uses_editorial_backgrounds() -> None:
     assert fig.layout.paper_bgcolor == "rgba(0,0,0,0)"
     assert fig.layout.plot_bgcolor == "#FFFFFF"
     assert fig.layout.font.family.startswith("IBM Plex Sans")
+
+
+def test_table_omits_height_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    import streamlit_app
+
+    captured = MagicMock()
+    monkeypatch.setattr(streamlit_app.st, "dataframe", captured)
+    frame = pd.DataFrame({"Ticker": ["SPY"], "Weight": [1.0]})
+    streamlit_app._table(frame)
+    captured.assert_called_once()
+    kwargs = captured.call_args.kwargs
+    assert "height" not in kwargs
+    assert kwargs["width"] == "stretch"
+    assert kwargs["hide_index"] is False
+    pd.testing.assert_frame_equal(captured.call_args.args[0], frame)
+
+
+def test_table_passes_height_and_hide_index_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    import streamlit_app
+
+    captured = MagicMock()
+    monkeypatch.setattr(streamlit_app.st, "dataframe", captured)
+    frame = pd.DataFrame({"Ticker": ["QQQ"]})
+    streamlit_app._table(frame, hide_index=True, height=320)
+    kwargs = captured.call_args.kwargs
+    assert kwargs["height"] == 320
+    assert kwargs["hide_index"] is True
+    assert kwargs["width"] == "stretch"
+
+
+def test_table_keeps_negative_highlight_styling(monkeypatch: pytest.MonkeyPatch) -> None:
+    import streamlit_app
+
+    captured = MagicMock()
+    monkeypatch.setattr(streamlit_app.st, "dataframe", captured)
+    frame = pd.DataFrame({"Stress P&L": [-1000.0, 250.0]})
+    streamlit_app._table(frame, highlight_neg=("Stress P&L",))
+    display = captured.call_args.args[0]
+    assert hasattr(display, "data")
+    pd.testing.assert_frame_equal(display.data, frame)

@@ -194,7 +194,10 @@ def _table(
             return "color: #9B4A45" if num < 0 else ""
 
         display = frame.style.map(_neg_color, subset=subset)
-    st.dataframe(display, width="stretch", hide_index=hide_index, height=height)
+    kwargs: dict[str, Any] = {"width": "stretch", "hide_index": hide_index}
+    if height is not None:
+        kwargs["height"] = height
+    st.dataframe(display, **kwargs)
 
 
 def np_is_number(value: object) -> bool:

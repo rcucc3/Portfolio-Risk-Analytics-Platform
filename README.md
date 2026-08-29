@@ -47,17 +47,17 @@ More deploy notes: [docs/deployment.md](docs/deployment.md).
 
 ## Example
 
-Sample numbers for the default 7-ETF book using Yahoo Finance adjusted closes from about 2015-01-05 through 2026-08-14. These change when the sample changes. They are not a forecast.
+Sample numbers for the default 7-ETF book using Yahoo Finance adjusted closes from about 2015-01-05 through 2026-08-28. These change when the sample changes. They are not a forecast.
 
 | Metric | Value |
 |---|---|
-| Annualized return | 10.83% |
-| Annualized volatility | 12.47% |
-| Sharpe (2% risk-free) | 0.73 |
+| Annualized return | 10.74% |
+| Annualized volatility | 12.46% |
+| Sharpe (2% risk-free) | 0.72 |
 | Max drawdown | -25.59% |
-| 1-day historical VaR 95% | 1.16% |
+| 1-day historical VaR 95% | 1.15% |
 | Diversification ratio | 1.38 |
-| Largest risk contributor | SPY (about 40% of vol from 30% of capital) |
+| Largest risk contributor | SPY (39.7% of vol from 30.0% of capital) |
 
 ## How it works
 
@@ -103,7 +103,7 @@ More detail: [docs/methodology.md](docs/methodology.md).
 python -m pytest
 ```
 
-There are 545 offline tests covering the engines, input parsing, and scenario mapping. They check things like weight sums, risk contribution totals, stress P&L identity, and optimization bounds.
+There are 548 offline tests covering the engines, input parsing, and scenario mapping. They check things like weight sums, risk contribution totals, stress P&L identity, and optimization bounds.
 
 ## Tech stack
 
@@ -133,7 +133,41 @@ portfolio-risk-platform/
 ├── data/       # cache (gitignored)
 └── outputs/    # CLI exports (gitignored)
 ```
+## Dashboard Preview
 
-Screenshots to capture later: [docs/screenshots/README.md](docs/screenshots/README.md).
+### Portfolio Overview
+
+The overview summarizes portfolio performance, allocation, volatility, Sharpe ratio, maximum drawdown, and historical VaR while benchmarking cumulative performance against SPY.
+
+![Portfolio Overview](docs/screenshots/Overview.png)
+
+### Risk & Drawdown Analysis
+
+Risk analytics compare capital weights with volatility contribution and highlight concentration, diversification, tail risk, and the portfolio's historical drawdown path.
+
+![Risk and Drawdown Analysis](docs/screenshots/Risk-And-Drawdown.png)
+
+### Monte Carlo Simulation
+
+Monte Carlo analysis simulates 10,000 portfolio paths across a 252-trading-day horizon and displays percentile bands around simulated portfolio value.
+
+![Monte Carlo Fan Chart](docs/screenshots/Monte-Carlo-Fan-Chart.png)
+
+The ending-value distribution summarizes terminal outcomes including median value, downside percentile, probability of loss, simulated VaR, and maximum drawdown.
+
+![Monte Carlo Ending Value Distribution](docs/screenshots/Monte-Carlo-Ending-Value-Distribution.png)
+
+### Portfolio Optimization
+
+Constrained mean-variance optimization compares the current portfolio with minimum-volatility and maximum-Sharpe portfolios across the efficient frontier.
+
+![Portfolio Optimization and Efficient Frontier](docs/screenshots/Optimization-And-Efficient-Frontier.png)
+
+### Stress Testing
+
+Scenario analysis estimates portfolio-level and position-level P&L under predefined market shocks and identifies the largest loss contributors and potential hedges.
+
+![Stress Testing Waterfall](docs/screenshots/Stress-Testing-Waterfall.png)
+
 
 Not investment advice. Numbers only describe the sample you load.
